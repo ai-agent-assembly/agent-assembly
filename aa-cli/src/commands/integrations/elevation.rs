@@ -372,6 +372,10 @@ pub struct Elevator {
     /// reviewed placement.
     reviewed_sha256: Option<String>,
     record: Record,
+    /// When no reviewed digest is on record (a repair re-places a document the
+    /// operator did not just review), show the digest and ask instead of
+    /// refusing.
+    ask_when_unreviewed: bool,
     /// The sudo binary in use for the current mode, and whether this module
     /// authenticated with it (so `sudo -k` is owed).
     authenticated_with: Option<String>,
@@ -384,8 +388,17 @@ impl Elevator {
             uid: unsafe { libc::getuid() },
             reviewed_sha256,
             record,
+            ask_when_unreviewed: false,
             authenticated_with: None,
         }
+    }
+
+    /// Ask the operator, on the terminal, about a placement they did not review
+    /// in a plan — used by `repair`.
+    #[must_use]
+    pub fn asking_when_unreviewed(mut self) -> Self {
+        self.ask_when_unreviewed = true;
+        self
     }
 
     /// Wrap this elevator as the client's handler. Dropping the handler (when
@@ -507,6 +520,13 @@ impl Elevator {
                         "the staged document (sha256:{digest}) is not the one you reviewed (sha256:{reviewed}); \
                          nothing was placed"
                     ))
+                }
+                None if self.ask_when_unreviewed => {
+                    if !confirm_on_tty(&format!(
+                        "Agent Assembly needs to re-place the managed-settings document (sha256:{digest}) at {target}. Continue?"
+                    )) {
+                        return O::Cancelled("re-placing the managed settings was declined".to_string());
+                    }
                 }
                 None => return O::Cancelled("no reviewed document digest is on record; nothing was placed".to_string()),
             },

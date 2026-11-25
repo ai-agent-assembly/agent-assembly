@@ -46,6 +46,7 @@ use clap::Args;
 
 use crate::output::OutputFormat;
 
+use super::elevation::{self, AdminAuthArg, Elevator};
 use super::model::{RemoveReport, RuntimeInfo};
 use super::render::{emit, Report};
 use super::session::{Failure, SessionOptions};
@@ -103,6 +104,12 @@ pub struct RemoveArgs {
     /// anything the plan above did not name.
     #[arg(long)]
     pub force: bool,
+
+    /// How administrator authorization is obtained when the removal has to
+    /// delete or restore the managed-settings file: `terminal` (default;
+    /// `sudo` in this terminal) or `gui` (the macOS dialog).
+    #[arg(long, value_enum, default_value_t = AdminAuthArg::Terminal)]
+    pub admin_auth: AdminAuthArg,
 }
 
 /// Run `aasm integrations remove`.
@@ -159,9 +166,26 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
             return Ok(Outcome::Success);
         }
 
+        // Only a removal that has to touch the root-owned file asks for
+        // authorization, and the preview says how before anyone confirms.
+        let privileged = preview.steps.iter().any(|s| s.privilege == "privileged_host");
+        let human = if privileged {
+            format!(
+                "{}{}\n",
+                preview_report.render_human(),
+                args.admin_auth.disclosure_line()
+            )
+        } else {
+            preview_report.render_human()
+        };
         match output {
-            OutputFormat::Table => print!("{}", preview_report.render_human()),
-            _ => eprint!("{}", preview_report.render_human()),
+            OutputFormat::Table => print!("{human}"),
+            _ => eprint!("{human}"),
+        }
+        // Checked after the preview and before the question: a removal that
+        // cannot be authorized should say so now, not after "y".
+        if privileged && matches!(args.admin_auth, AdminAuthArg::Terminal) && !args.dry_run {
+            elevation::preflight()?;
         }
 
         if !preview.residual.is_empty() && !args.force {
@@ -187,14 +211,33 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
         confirm(
             args.yes,
             output,
-            &format!("Remove the Agent Assembly integration from {}?", args.tool),
+            &if privileged {
+                format!(
+                    "Remove the Agent Assembly integration from {}, including the administrator-owned managed \
+                     settings file ({})?",
+                    args.tool,
+                    match args.admin_auth {
+                        AdminAuthArg::Terminal => "sudo in this terminal",
+                        AdminAuthArg::Gui => "macOS dialog",
+                    }
+                )
+            } else {
+                format!("Remove the Agent Assembly integration from {}?", args.tool)
+            },
         )?;
 
+        let record = elevation::new_record();
+        if privileged && matches!(args.admin_auth, AdminAuthArg::Terminal) {
+            session
+                .client
+                .set_elevation_handler(Elevator::new(None, record.clone()).into_handler());
+        }
+        let target = target.with_authorization_method(if privileged { args.admin_auth.as_wire() } else { "" });
         let removed = session
             .client
             .remove(&args.tool, &preview.plan_id, target.as_request())
             .await
-            .map_err(verb_failure)?;
+            .map_err(|e| elevation::failure_after(verb_failure(e), &record))?;
         emit(&RemoveReport::from_view(runtime, &removed, false, args.yes), output);
         Ok(Outcome::Success)
     })

@@ -18,6 +18,7 @@ use clap::Args;
 
 use crate::output::OutputFormat;
 
+use super::elevation::AdminAuthArg;
 use super::model::{PlanReport, RuntimeInfo};
 use super::render::emit;
 use super::session::{Failure, Session, SessionOptions};
@@ -69,6 +70,16 @@ pub struct PlanArgs {
     /// reverses it.
     #[arg(long)]
     pub install_managed_settings: bool,
+
+    /// How administrator authorization is obtained for that one file write.
+    ///
+    /// `terminal` (the default) runs `sudo` in the terminal that ran this
+    /// command, so it works over SSH and tmux with no desktop session: one
+    /// `/usr/bin/install` runs as root, and `aasm` and the runtime never do.
+    /// `gui` uses the macOS authorization dialog and is used only when you ask
+    /// for it. `--yes` never changes this.
+    #[arg(long, value_enum, default_value_t = AdminAuthArg::Terminal)]
+    pub admin_auth: AdminAuthArg,
 }
 
 /// The level a plan asks for, as the wire spells it.
@@ -101,6 +112,10 @@ pub fn run(args: PlanArgs, options: SessionOptions, output: OutputFormat) -> Exi
 /// is how a user ends up consenting to something they were not shown.
 pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<PlanReport, Failure> {
     let scope = resolve_scope(args)?;
+    // The method matters only to the managed-settings write, so it is stated
+    // only then — which also keeps every other plan working against a runtime
+    // older than the field.
+    let privileged = args.install_managed_settings;
     let project_root = super::target::project_root_for_plan(scope)?;
     let user_config_home = super::target::user_config_home_for_plan(scope)?;
     resolve_tool(session, &args.tool, true).await?;
@@ -119,11 +134,14 @@ pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<Pla
             requested_level: requested_level(args.install_managed_settings),
             project_root: &project_root,
             user_config_home: &user_config_home,
-            authorization_method: "",
+            // Stated only when a privileged step is in play: an ordinary
+            // unprivileged plan must keep working against a runtime older than
+            // the field, which would refuse a stated terminal method.
+            authorization_method: if privileged { args.admin_auth.as_wire() } else { "" },
         })
         .await
         .map_err(verb_failure)?;
-    Ok(PlanReport::from_view(runtime, &view))
+    Ok(PlanReport::from_view(runtime, &view).with_authorization(args.admin_auth.disclosure_line()))
 }
 
 /// The scope this plan writes, refusing the administrator surface unless it was
@@ -159,6 +177,7 @@ mod tests {
             policy_profile: String::new(),
             allow_privileged_host_steps: false,
             install_managed_settings,
+            admin_auth: AdminAuthArg::Terminal,
         }
     }
 

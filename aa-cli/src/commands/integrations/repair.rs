@@ -62,6 +62,7 @@ use clap::Args;
 
 use crate::output::OutputFormat;
 
+use super::elevation::{self, AdminAuthArg, Elevator};
 use super::model::{RepairReport, RuntimeInfo, StatusReport, UnsupportedRow};
 use super::render::emit;
 use super::session::SessionOptions;
@@ -117,6 +118,12 @@ pub struct RepairArgs {
     /// authorization boundary (AAASM-6085; see `--help` CONSENT section).
     #[arg(short = 'y', long)]
     pub yes: bool,
+
+    /// How administrator authorization is obtained when the repair has to
+    /// rewrite the managed-settings file: `terminal` (default; `sudo` in this
+    /// terminal) or `gui` (the macOS dialog).
+    #[arg(long, value_enum, default_value_t = AdminAuthArg::Terminal)]
+    pub admin_auth: AdminAuthArg,
 }
 
 /// Run `aasm integrations repair`.
@@ -213,17 +220,40 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
         for artifact in &drifted {
             eprintln!("  - {artifact}");
         }
+        // A repair elevates only when the root-owned managed file is part of
+        // the installation; say how before asking, and refuse now if that way
+        // is not available (AAASM-6491).
+        let privileged = drifted.iter().any(|d| d.contains("endpoint-managed"))
+            || before
+                .evidence
+                .iter()
+                .any(|e| e.mechanism == "host_enforcement" && e.kind == "host_attested");
+        if privileged {
+            eprintln!("  {}", args.admin_auth.disclosure_line());
+            if matches!(args.admin_auth, AdminAuthArg::Terminal) {
+                elevation::preflight()?;
+            }
+        }
         confirm(
             args.yes,
             output,
             &format!("Rewrite the {} AASM-owned artifact(s) above?", drifted.len()),
         )?;
 
+        let record = elevation::new_record();
+        if privileged && matches!(args.admin_auth, AdminAuthArg::Terminal) {
+            session.client.set_elevation_handler(
+                Elevator::new(None, record.clone())
+                    .asking_when_unreviewed()
+                    .into_handler(),
+            );
+        }
+        let target = target.with_authorization_method(if privileged { args.admin_auth.as_wire() } else { "" });
         let view = session
             .client
             .repair(&args.tool, target.as_request())
             .await
-            .map_err(verb_failure)?;
+            .map_err(|e| elevation::failure_after(verb_failure(e), &record))?;
         let unresolved: Vec<UnsupportedRow> = view.unrepairable.iter().map(UnsupportedRow::from).collect();
         let status = view
             .status

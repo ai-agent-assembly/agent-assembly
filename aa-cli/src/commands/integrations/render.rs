@@ -411,6 +411,9 @@ impl Report for PlanReport {
             for prompt in &self.required_permissions {
                 out.push_str(&format!("  - {prompt}\n"));
             }
+            if let Some(line) = &self.authorization {
+                out.push_str(&format!("  {line}\n"));
+            }
         }
 
         if !self.unsupported.is_empty() {
@@ -1174,6 +1177,7 @@ mod tests {
             unsupported: Vec::new(),
             warnings: Vec::new(),
             required_permissions: Vec::new(),
+            authorization: None,
             applied,
         }
     }

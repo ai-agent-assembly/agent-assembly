@@ -366,6 +366,12 @@ pub struct PlanReport {
     /// permissions a user is being asked for are one list rather than something
     /// they must reconstruct by scanning the steps.
     pub required_permissions: Vec<String>,
+    /// How administrator authorization will be obtained, when this plan has a
+    /// privileged step (AAASM-6491). Absent otherwise, so an unprivileged
+    /// plan's JSON is unchanged. Shown before the confirmation, so the operator
+    /// knows whether they will be asked for a password here or by a dialog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<String>,
     /// Whether this plan has been applied. `false` on a dry run, which is what
     /// lets the human rendering say "nothing has been changed" exactly when
     /// nothing has been.
@@ -405,8 +411,29 @@ impl PlanReport {
             steps,
             unsupported: view.unsupported.iter().map(UnsupportedRow::from).collect(),
             warnings: view.warnings.clone(),
+            authorization: None,
             applied: false,
         }
+    }
+
+    /// State how a privileged step would be authorized. A plan with none has
+    /// nothing to authorize and states nothing.
+    #[must_use]
+    pub fn with_authorization(mut self, line: &str) -> Self {
+        if !self.required_permissions.is_empty() {
+            self.authorization = Some(line.to_string());
+        }
+        self
+    }
+
+    /// The digest of the privileged managed-settings document this plan
+    /// proposes, which the operator reviewed — the one a terminal authorization
+    /// is later checked against.
+    pub fn privileged_content_sha256(&self) -> Option<String> {
+        self.steps
+            .iter()
+            .find(|s| s.privilege == "privileged_host")
+            .and_then(|s| s.content_sha256.clone())
     }
 }
 
@@ -2032,6 +2059,7 @@ mod tests {
             unsupported: Vec::new(),
             warnings: Vec::new(),
             required_permissions: Vec::new(),
+            authorization: None,
             applied: true,
         }
     }
