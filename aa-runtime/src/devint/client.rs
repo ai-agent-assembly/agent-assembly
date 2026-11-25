@@ -596,6 +596,7 @@ impl DevIntClient {
             policy_profile_id: args.policy_profile_id.to_string(),
             project_root: args.project_root.to_string(),
             user_config_home: args.user_config_home.to_string(),
+            authorization_method: String::new(),
         });
         let response = self.call(request).await?;
         response.plan.ok_or(ClientError::UnexpectedFrame)
@@ -731,6 +732,7 @@ impl DevIntClient {
             user_config_home: target.user_config_home.to_string(),
             caller_env_examined,
             caller_env_present,
+            authorization_method: String::new(),
         });
         Ok(request)
     }
@@ -1071,6 +1073,7 @@ mod tests {
                 user_config_home: String::new(),
                 caller_env_examined: caller_env.examined_names().map(str::to_string).collect(),
                 caller_env_present: caller_env.present_names().map(str::to_string).collect(),
+                authorization_method: String::new(),
             }),
         };
         let encoded = format!("{request:?}");

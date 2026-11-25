@@ -314,6 +314,13 @@ message TargetArgs {
   // ignored-field-decodes-identically-to-unsent reason `project_root` above
   // documents.
   string user_config_home = 5;
+  // How administrator authorization is obtained for a privileged host step:
+  // "terminal" | "gui" (AAASM-6491). Empty means the caller did not say.
+  //
+  // Requires DI-API 8 (`DI_API_TERMINAL_ELEVATION_SINCE`). A pre-v8 runtime
+  // discards this field and opens the macOS GUI dialog regardless, so a client
+  // must refuse "terminal" below v8 rather than send it and hope.
+  string authorization_method = 6;
 }
 
 // What the caller wants planned. Every field is something a caller may
@@ -388,6 +395,10 @@ message PlanArgs {
   // negotiation signal. Clients must refuse "user" scope below v7 rather than
   // send this and inspect the reply.
   string user_config_home = 7;
+  // "terminal" | "gui" | empty (AAASM-6491). Recorded in the authored plan and
+  // re-checked at apply: a plan reviewed under one method is never executed
+  // under another. Requires DI-API 8; see `TargetArgs.authorization_method`.
+  string authorization_method = 8;
 }
 
 message ApplyArgs {
@@ -469,6 +480,60 @@ message Denied {
   string message = 3;
   // What the user or client should do.
   string remediation = 4;
+}
+
+// ── Terminal elevation (AAASM-6491, DI-API 8) ────────────────────────────────
+
+// What the runtime asks the client to run as administrator.
+enum ElevationKind {
+  ELEVATION_KIND_UNSPECIFIED = 0;
+  // Place `staged_path` at `target`, owned by root.
+  ELEVATION_KIND_INSTALL_FILE = 1;
+  // Delete `target`.
+  ELEVATION_KIND_DELETE_FILE = 2;
+}
+
+enum ElevationPurpose {
+  ELEVATION_PURPOSE_UNSPECIFIED = 0;
+  ELEVATION_PURPOSE_PLACE_REVIEWED = 1;
+  ELEVATION_PURPOSE_RESTORE_BACKUP = 2;
+  ELEVATION_PURPOSE_REMOVE = 3;
+}
+
+// ElevationRequest — runtime → client, tag 5, sent on the connection that
+// carries an in-flight Apply/Remove/Repair, and only when the connection
+// negotiated DI-API 8 or newer. Paths and digests only: no content, no command.
+// The client acts on its own canonical target path, never on `target`.
+message ElevationRequest {
+  // The in-flight request this belongs to.
+  uint64 request_id = 1;
+  // Strictly increasing per request; the result must echo it.
+  uint32 sequence = 2;
+  ElevationKind kind = 3;
+  ElevationPurpose purpose = 4;
+  string target = 5;
+  string staged_path = 6;
+  string staged_sha256 = 7;
+}
+
+// Zero value fails closed: an unset outcome is never read as success.
+enum ElevationResultCode {
+  ELEVATION_RESULT_CODE_UNSPECIFIED = 0;
+  ELEVATION_RESULT_CODE_COMPLETED = 1;
+  ELEVATION_RESULT_CODE_DENIED = 2;
+  ELEVATION_RESULT_CODE_CANCELLED = 3;
+  ELEVATION_RESULT_CODE_UNAVAILABLE = 4;
+  ELEVATION_RESULT_CODE_NON_INTERACTIVE = 5;
+}
+
+// ElevationResult — client → runtime, tag 3, the only frame a client may send
+// while a request is in flight.
+message ElevationResult {
+  uint64 request_id = 1;
+  uint32 sequence = 2;
+  ElevationResultCode outcome = 3;
+  // Operator-facing text. Never a password; display only.
+  string detail = 4;
 }
 
 // ── Data-minimised projections ───────────────────────────────────────────────

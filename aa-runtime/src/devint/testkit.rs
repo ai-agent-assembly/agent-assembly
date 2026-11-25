@@ -582,6 +582,7 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             // unlike an arbitrary synthetic path this generic builder has no
             // real caller environment to derive one from.
             user_config_home: std::env::temp_dir().join(".claude").to_string_lossy().into_owned(),
+            authorization_method: String::new(),
         }),
         apply: matches!(verb, DiVerb::Apply).then(|| wire::ApplyArgs {
             plan_id: "plan-1".to_string(),
@@ -610,6 +611,7 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             user_config_home: std::env::temp_dir().join(".claude").to_string_lossy().into_owned(),
             caller_env_examined: Vec::new(),
             caller_env_present: Vec::new(),
+            authorization_method: String::new(),
         }),
     }
 }
