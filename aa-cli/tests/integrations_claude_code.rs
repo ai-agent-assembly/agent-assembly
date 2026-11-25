@@ -116,6 +116,13 @@ struct Harness {
 impl Harness {
     fn start() -> Self {
         let _env_guard = aa_cli::env_guard::lock();
+        // The elevation seam is for the stub these tests install per command. An
+        // ambient one would silently redirect every run, so it is a failure, not
+        // a reason to skip.
+        assert!(
+            std::env::var_os("AASM_TEST_ELEVATION_HELPER").is_none(),
+            "AASM_TEST_ELEVATION_HELPER must not be set in the environment these tests run in"
+        );
         let dir = tempfile::tempdir().expect("tempdir");
         let run = dir.path().join("run");
         let claude_home = dir.path().join(".claude");
@@ -1281,6 +1288,8 @@ cmd=$1; shift
 last=; penult=
 for a in "$@"; do penult=$last; last=$a; done
 case "$cmd" in
+  /usr/bin/tee) mkdir -p "$(dirname "$last")" 2>/dev/null; cat > "$last"; exit $? ;;
+  /bin/rmdir) rmdir "$last"; exit $? ;;
   /usr/bin/install)
     if [ "$1" = "-d" ]; then mkdir -p "$last"; exit 0; fi
     mkdir -p "$(dirname "$last")" && cp "$penult" "$last" && chmod 644 "$last"; exit $? ;;
@@ -1426,7 +1435,7 @@ exit 1
                     // Type only once `sudo -v` is waiting, so the line is not
                     // consumed by something earlier. Bounded: no answer is
                     // typed if the stub is never reached.
-                    for _ in 0..1200 {
+                    for _ in 0..400 {
                         let seen = std::fs::read_to_string(&record).unwrap_or_default();
                         if seen.contains("ARG:-v") {
                             std::thread::sleep(std::time::Duration::from_millis(150));
@@ -1532,7 +1541,12 @@ fn terminal_authorization_installs_through_one_sudo_call_and_never_the_dialog() 
     let calls = h.stub_calls();
     let target_str = target.display().to_string();
     let dir_str = target.parent().expect("parent").display().to_string();
-    assert_eq!(calls.len(), 4, "authenticate, mkdir, install, drop: {calls:?}");
+    let tmp_str = format!("{dir_str}/.managed-settings.json.aasm-new");
+    assert_eq!(
+        calls.len(),
+        6,
+        "authenticate, mkdir, tee, install, rm tmp, drop: {calls:?}"
+    );
     assert_eq!(&calls[0][..2], ["-v", "-p"], "{calls:?}");
     assert!(
         calls[0][2].starts_with("[aasm] password for %u to place one root-owned file, "),
@@ -1556,9 +1570,11 @@ fn terminal_authorization_installs_through_one_sudo_call_and_never_the_dialog() 
             dir_str.as_str()
         ]
     );
-    let install = &calls[2];
+    // Root is handed the verified bytes on stdin and a root-owned temporary: no
+    // argv run as root ever names the user-writable staged file.
+    assert_eq!(calls[2], ["-n", "--", "/usr/bin/tee", "--", tmp_str.as_str()]);
     assert_eq!(
-        &install[..10],
+        calls[3],
         [
             "-n",
             "--",
@@ -1569,12 +1585,17 @@ fn terminal_authorization_installs_through_one_sudo_call_and_never_the_dialog() 
             "root",
             "-g",
             "wheel",
-            "--"
+            "--",
+            tmp_str.as_str(),
+            target_str.as_str()
         ]
     );
-    assert!(install[10].ends_with("managed-settings.staged.json"), "{install:?}");
-    assert_eq!(install[11], target_str);
-    assert_eq!(calls[3], ["-k"]);
+    assert_eq!(calls[4], ["-n", "--", "/bin/rm", "-f", "--", tmp_str.as_str()]);
+    assert_eq!(calls[5], ["-k"]);
+    assert!(
+        !calls.iter().flatten().any(|a| a.contains("staged")),
+        "a staged path reached the root side: {calls:?}"
+    );
 
     assert_eq!(
         h.recording.calls().len(),
@@ -1609,8 +1630,12 @@ fn terminal_authorization_installs_through_one_sudo_call_and_never_the_dialog() 
     assert!(removal.status.success(), "{message}");
     assert!(!target.exists(), "removal must leave the target absent");
     let calls = h.stub_calls();
-    let removal_calls = &calls[4..];
+    let removal_calls = &calls[6..];
     assert_eq!(removal_calls.len(), 3, "authenticate, rm, drop: {removal_calls:?}");
+    assert!(
+        removal_calls[0][2].contains("to delete one root-owned file"),
+        "{removal_calls:?}"
+    );
     assert_eq!(
         removal_calls[1],
         ["-n", "--", "/bin/rm", "-f", "--", target_str.as_str()]
@@ -1766,4 +1791,81 @@ fn osascript_appears_only_in_the_gui_authority() {
         hits.len() == 1 && hits[0].ends_with("aa-devtool-claude-code/src/managed_settings.rs"),
         "osascript must live only in MacOsAdminAuthority, found: {hits:?}"
     );
+}
+
+/// With no terminal, `remove` and `repair` exit 9 before anything is sent that
+/// could change the host, and `remove` has already shown how it would have
+/// asked.
+#[test]
+fn remove_and_repair_without_a_terminal_exit_before_any_mutation() {
+    let scenario = "remove_and_repair_without_a_terminal_exit_before_any_mutation";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let install = h.aasm_with_stub(
+        &["install", "claude-code", "--install-managed-settings", "--yes"],
+        Some(PASSWORD),
+    );
+    assert!(install.status.success(), "{}{}", stdout(&install), stderr(&install));
+    let before = h.stub_calls().len();
+    let target = h.managed_target();
+    assert!(target.exists());
+
+    let removal = h.aasm_with_stub(&["remove", "claude-code", "--yes"], None);
+    let message = format!("{}{}", stdout(&removal), stderr(&removal));
+    println!("--- remove, no tty ---\n{message}");
+    assert_eq!(removal.status.code(), Some(9), "{message}");
+    assert!(
+        message.contains("authorization: sudo in this terminal"),
+        "disclosed first: {message}"
+    );
+    assert!(message.contains("needs an interactive terminal"), "{message}");
+    assert!(target.exists(), "nothing may be removed");
+    assert_eq!(h.stub_calls().len(), before, "sudo must not be reached");
+
+    // Repair: take the managed file away so there is drift on exactly that path.
+    std::fs::remove_file(&target).expect("drift the managed file");
+    let repair = h.aasm_with_stub(&["repair", "claude-code", "--yes"], None);
+    let message = format!("{}{}", stdout(&repair), stderr(&repair));
+    println!("--- repair, no tty ---\n{message}");
+    assert_eq!(repair.status.code(), Some(9), "{message}");
+    assert!(message.contains("authorization: sudo in this terminal"), "{message}");
+    assert!(!target.exists(), "nothing may be re-placed without authorization");
+    assert_eq!(h.stub_calls().len(), before, "sudo must not be reached");
+    assert!(h.recording.calls().is_empty(), "the dialog must not be reached either");
+}
+
+/// The removal preview names how authorization will be obtained *before* the
+/// confirmation, and declining to confirm changes nothing.
+#[test]
+fn the_removal_preview_names_the_method_before_it_asks_for_confirmation() {
+    let scenario = "the_removal_preview_names_the_method_before_it_asks_for_confirmation";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let install = h.aasm_with_stub(
+        &["install", "claude-code", "--install-managed-settings", "--yes"],
+        Some(PASSWORD),
+    );
+    assert!(install.status.success(), "{}{}", stdout(&install), stderr(&install));
+    let before = h.stub_calls().len();
+
+    // A terminal exists but stdin is not one and `--yes` is absent: the command
+    // cannot ask, so it refuses — after printing the preview.
+    let removal = h.aasm_with_stub(&["remove", "claude-code"], Some(PASSWORD));
+    let message = format!("{}{}", stdout(&removal), stderr(&removal));
+    println!("--- remove, no --yes ---\n{message}");
+    assert_eq!(removal.status.code(), Some(9), "{message}");
+    let disclosed = message
+        .find("authorization: sudo in this terminal")
+        .expect("disclosure line");
+    let refused = message.find("nothing was changed").expect("refusal");
+    assert!(
+        disclosed < refused,
+        "the method must be named before the refusal to proceed: {message}"
+    );
+    assert!(h.managed_target().exists());
+    assert_eq!(h.stub_calls().len(), before);
 }
