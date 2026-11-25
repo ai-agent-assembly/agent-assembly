@@ -81,6 +81,11 @@ pub struct FakeLifecycle {
     /// reached the service after `Request` → `build_target` decode, not just
     /// what the client sent.
     last_target: Mutex<Option<LifecycleTarget>>,
+    /// When set, `apply` asks the target's broker to perform this operation
+    /// (on the blocking pool, as the real service does) before succeeding.
+    elevating: Mutex<Option<aa_core::integration::ElevatedOperation>>,
+    /// What the broker answered, in order.
+    elevation_outcomes: Mutex<Vec<aa_core::integration::ElevationOutcome>>,
 }
 
 /// `Changed` rather than a derived default.
@@ -95,11 +100,25 @@ impl Default for FakeLifecycle {
             mutation: ApplyMutation::Changed,
             calls: AtomicUsize::new(0),
             last_target: Mutex::new(None),
+            elevating: Mutex::new(None),
+            elevation_outcomes: Mutex::new(Vec::new()),
         }
     }
 }
 
 impl FakeLifecycle {
+    /// A fake whose `apply` asks for `operation` to be elevated first.
+    pub fn elevating(operation: aa_core::integration::ElevatedOperation) -> Self {
+        let fake = Self::default();
+        *fake.elevating.lock().expect("lock poisoned") = Some(operation);
+        fake
+    }
+
+    /// What the broker answered to this fake's elevation requests.
+    pub fn elevation_outcomes(&self) -> Vec<aa_core::integration::ElevationOutcome> {
+        self.elevation_outcomes.lock().expect("lock poisoned").clone()
+    }
+
     /// A fake that refuses every operation with `detail`.
     pub fn refusing(detail: impl Into<String>) -> Self {
         Self {
@@ -240,9 +259,25 @@ impl IntegrationLifecycle for FakeLifecycle {
         &self,
         tool: &DevToolKind,
         plan_id: &str,
-        _target: &LifecycleTarget,
+        target: &LifecycleTarget,
     ) -> Result<AppliedIntegration, LifecycleError> {
         self.enter()?;
+        *self.last_target.lock().expect("lock poisoned") = Some(target.clone());
+        let operation = self.elevating.lock().expect("lock poisoned").clone();
+        if let (Some(operation), Some(broker)) = (operation, target.elevation.broker.clone()) {
+            let outcome = tokio::task::spawn_blocking(move || broker.perform(&operation))
+                .await
+                .expect("the broker task panicked");
+            self.elevation_outcomes
+                .lock()
+                .expect("lock poisoned")
+                .push(outcome.clone());
+            if outcome != aa_core::integration::ElevationOutcome::Completed {
+                return Err(LifecycleError::Refused {
+                    detail: format!("elevation: {outcome:?}"),
+                });
+            }
+        }
         let plan = poisoned_plan(tool);
         let receipt = IntegrationReceipt {
             schema_version: LIFECYCLE_SCHEMA_VERSION,
@@ -377,7 +412,22 @@ impl TestServer {
     pub async fn start(lifecycle: FakeLifecycle) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("run").join("devint.sock");
-        Self::bind_at(socket_path, Some(dir), lifecycle, RuntimeProvenance::detect()).await
+        Self::bind_at(socket_path, Some(dir), lifecycle, RuntimeProvenance::detect(), None).await
+    }
+
+    /// Bind and run a server whose elevation requests time out after `timeout`
+    /// (AAASM-6491), so the silence path is testable without waiting ten minutes.
+    pub async fn start_with_elevation_timeout(lifecycle: FakeLifecycle, timeout: std::time::Duration) -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("run").join("devint.sock");
+        Self::bind_at(
+            socket_path,
+            Some(dir),
+            lifecycle,
+            RuntimeProvenance::detect(),
+            Some(timeout),
+        )
+        .await
     }
 
     /// Bind and run a server that reports `provenance` as its build identity.
@@ -389,7 +439,7 @@ impl TestServer {
     pub async fn start_reporting(lifecycle: FakeLifecycle, provenance: RuntimeProvenance) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("run").join("devint.sock");
-        Self::bind_at(socket_path, Some(dir), lifecycle, provenance).await
+        Self::bind_at(socket_path, Some(dir), lifecycle, provenance, None).await
     }
 
     /// Bind and run a server at an exact path the caller owns.
@@ -398,7 +448,7 @@ impl TestServer {
     /// duplicate-runtime failure can take: a second bind on the *same* path
     /// unlinks the first, so two reachable runtimes always sit on two names.
     pub async fn start_at(socket_path: PathBuf, lifecycle: FakeLifecycle) -> Self {
-        Self::bind_at(socket_path, None, lifecycle, RuntimeProvenance::detect()).await
+        Self::bind_at(socket_path, None, lifecycle, RuntimeProvenance::detect(), None).await
     }
 
     async fn bind_at(
@@ -406,6 +456,7 @@ impl TestServer {
         dir: Option<tempfile::TempDir>,
         lifecycle: FakeLifecycle,
         provenance: RuntimeProvenance,
+        elevation_timeout: Option<std::time::Duration>,
     ) -> Self {
         let server = DevIntServer::bind(DevIntServerConfig {
             socket_path: socket_path.clone(),
@@ -425,6 +476,7 @@ impl TestServer {
             tokens: tokens.clone(),
             audit: Arc::new(audit.clone()),
             provenance: Arc::clone(&provenance),
+            elevation_timeout: elevation_timeout.unwrap_or(super::elevation::DEFAULT_ELEVATION_TIMEOUT),
         };
         tracker.spawn(server.run(tracker.clone(), cancel.clone(), services));
 
@@ -540,6 +592,13 @@ impl RawClient {
         codec::read_response_frame(&mut self.reader).await.expect("read frame")
     }
 
+    /// Answer an elevation request (AAASM-6491).
+    pub async fn send_elevation_result(&mut self, result: wire::ElevationResult) {
+        codec::write_client_frame(&mut self.writer, DiFrame::ElevationResult(result))
+            .await
+            .expect("send elevation result");
+    }
+
     /// Read one server frame, allowing for a closed connection.
     pub async fn try_read(&mut self) -> Option<DiResponseFrame> {
         codec::read_response_frame(&mut self.reader).await.ok()
@@ -582,6 +641,7 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             // unlike an arbitrary synthetic path this generic builder has no
             // real caller environment to derive one from.
             user_config_home: std::env::temp_dir().join(".claude").to_string_lossy().into_owned(),
+            authorization_method: String::new(),
         }),
         apply: matches!(verb, DiVerb::Apply).then(|| wire::ApplyArgs {
             plan_id: "plan-1".to_string(),
@@ -610,6 +670,7 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             user_config_home: std::env::temp_dir().join(".claude").to_string_lossy().into_owned(),
             caller_env_examined: Vec::new(),
             caller_env_present: Vec::new(),
+            authorization_method: String::new(),
         }),
     }
 }

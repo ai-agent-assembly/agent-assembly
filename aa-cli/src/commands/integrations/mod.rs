@@ -33,6 +33,7 @@ use clap::{Args, Subcommand, ValueEnum};
 
 use crate::output::OutputFormat;
 
+pub mod elevation;
 pub mod exit;
 pub mod install;
 pub mod list;
@@ -524,6 +525,41 @@ mod tests {
             parse(&["aasm", "integrations", "list"]).command,
             IntegrationsCommands::List(_)
         ));
+    }
+
+    /// Terminal authorization is the default on every verb that can elevate, the
+    /// dialog is opt-in by name, and `--yes` never selects either (AAASM-6491).
+    #[test]
+    fn admin_auth_defaults_to_terminal_and_gui_is_opt_in() {
+        use super::elevation::AdminAuthArg;
+        let method = |args: &[&str]| match parse(args).command {
+            IntegrationsCommands::Plan(a) => a.admin_auth,
+            IntegrationsCommands::Install(a) => a.admin_auth,
+            IntegrationsCommands::Remove(a) => a.admin_auth,
+            IntegrationsCommands::Repair(a) => a.admin_auth,
+            _ => panic!("not a verb that elevates"),
+        };
+        for verb in ["plan", "install", "remove", "repair"] {
+            assert_eq!(
+                method(&["aasm", "integrations", verb, "claude-code"]),
+                AdminAuthArg::Terminal
+            );
+            assert_eq!(
+                method(&["aasm", "integrations", verb, "claude-code", "--admin-auth", "gui"]),
+                AdminAuthArg::Gui
+            );
+        }
+        for verb in ["install", "remove", "repair"] {
+            assert_eq!(
+                method(&["aasm", "integrations", verb, "claude-code", "--yes"]),
+                AdminAuthArg::Terminal,
+                "--yes must not change how authorization is obtained"
+            );
+        }
+        assert!(
+            Harness::try_parse_from(["aasm", "integrations", "install", "claude-code", "--admin-auth", "sudo"])
+                .is_err()
+        );
     }
 
     #[test]

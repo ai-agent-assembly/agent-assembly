@@ -41,6 +41,8 @@ pub(crate) struct Target {
     project_root: String,
     user_config_home: String,
     caller_env: CallerEnvironment,
+    /// `"terminal"`, `"gui"` or `""`, for the verbs that may elevate (AAASM-6491).
+    authorization_method: &'static str,
 }
 
 /// This process's own presence-only reading of the names in
@@ -89,13 +91,25 @@ impl Target {
                 project_root: String::new(),
                 user_config_home,
                 caller_env,
+                authorization_method: "",
             });
         };
         Ok(Self {
             project_root: nameable_on_the_wire(&dir)?,
             user_config_home,
             caller_env,
+            authorization_method: "",
         })
+    }
+
+    /// State how a privileged step in this request is to be authorized.
+    ///
+    /// Empty (the default) states nothing, which every unprivileged request
+    /// must keep doing so it still works against a runtime older than the field.
+    #[must_use]
+    pub(crate) fn with_authorization_method(mut self, method: &'static str) -> Self {
+        self.authorization_method = method;
+        self
     }
 
     /// The borrowed form the client sends.
@@ -105,6 +119,7 @@ impl Target {
             project_root: &self.project_root,
             user_config_home: &self.user_config_home,
             caller_env: Some(&self.caller_env),
+            authorization_method: self.authorization_method,
         }
     }
 }

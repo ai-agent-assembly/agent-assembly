@@ -33,6 +33,7 @@ use clap::Args;
 
 use crate::output::OutputFormat;
 
+use super::elevation::{self, AdminAuthArg, Elevator, Mode};
 use super::model::InstallReport;
 use super::plan::PlanArgs;
 use super::render::{emit, Report};
@@ -48,12 +49,24 @@ CONSENT:
     bypasses operating-system administrator authorization or another
     security boundary.
 
-    With --install-managed-settings (or any plan carrying a privileged host
-    step), --yes still lets that step reach the real OS authorization prompt
-    (Touch ID, an admin password, sudo, or the platform equivalent) — it is
-    not answered for you, and a run in a non-interactive session with no way
-    to satisfy it fails closed with no partial write, exactly as it would
-    without --yes.
+    With --install-managed-settings, administrator authorization is obtained
+    by --admin-auth, and --yes never changes it:
+
+        terminal   (default) sudo in the terminal that ran this command. You
+                   type your password to sudo directly; aasm and the runtime
+                   never see it and never run as root — only a fixed
+                   set of commands (install -d, tee, install, rm -f, rmdir) on
+                   the one managed-settings file and its directory does, and
+                   each such operation asks for the password afresh. Works over
+                   SSH and tmux
+                   with no desktop session. With no controlling terminal the
+                   command exits promptly (9) and changes nothing.
+        gui        the macOS authorization dialog. Used only when you pass
+                   --admin-auth gui; it needs a logged-in desktop session.
+
+    --yes still lets the step reach that authorization — it is not answered
+    for you, and a run with no way to satisfy it fails closed with no partial
+    write, exactly as it would without --yes.
 
     --output json reports `consent_auto_approved: true` when --yes skipped
     this command's own prompt, so automation can tell that apart from a plan
@@ -66,6 +79,15 @@ CONSENT:
             --profile strict --yes
         aasm integrations install claude-code --install-managed-settings \\
             --profile strict -y --output json
+
+    Over SSH or tmux (terminal authorization is the default):
+
+        aasm integrations install claude-code --install-managed-settings
+
+    On a machine with a desktop session, to use the macOS dialog instead:
+
+        aasm integrations install claude-code --install-managed-settings \\
+            --admin-auth gui
 ";
 
 /// `aasm integrations install` arguments.
@@ -99,6 +121,12 @@ pub struct InstallArgs {
     /// reach `Host Enforced`. See `aasm integrations plan --help`.
     #[arg(long)]
     pub install_managed_settings: bool,
+
+    /// How administrator authorization is obtained for the managed-settings
+    /// write: `terminal` (default; `sudo` in this terminal) or `gui` (the macOS
+    /// dialog). `--yes` does not change it.
+    #[arg(long, value_enum, default_value_t = AdminAuthArg::Terminal)]
+    pub admin_auth: AdminAuthArg,
 
     /// Apply without asking. Required for non-interactive and `--output json`
     /// runs, which have no way to answer a prompt.
@@ -139,6 +167,13 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
     }
 
     run_blocking(async move {
+        // Before anything is planned or shown: if a terminal cannot be asked,
+        // say so now and exit, rather than after the operator has reviewed and
+        // confirmed a plan that cannot be applied.
+        let terminal_mode = args.install_managed_settings && matches!(args.admin_auth, AdminAuthArg::Terminal);
+        if terminal_mode && !args.dry_run {
+            elevation::preflight()?;
+        }
         let mut session = open(options).await?;
         let plan_args = PlanArgs {
             tool: args.tool.clone(),
@@ -147,6 +182,7 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
             policy_profile: args.policy_profile.clone(),
             allow_privileged_host_steps: args.allow_privileged_host_steps,
             install_managed_settings: args.install_managed_settings,
+            admin_auth: args.admin_auth,
         };
         let plan = super::plan::author(&mut session, &plan_args).await?;
 
@@ -172,9 +208,13 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
         } else {
             format!(
                 "Apply this plan to {}, including {} permission(s) that change host state \
-                 and will ask for administrator authorization?",
+                 and will ask for administrator authorization ({})?",
                 args.tool,
-                plan.required_permissions.len()
+                plan.required_permissions.len(),
+                match args.admin_auth {
+                    AdminAuthArg::Terminal => "sudo in this terminal",
+                    AdminAuthArg::Gui => "macOS dialog",
+                }
             )
         };
         confirm(args.yes, output, &prompt)?;
@@ -186,11 +226,27 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
         // moments ago — same process, same rule (`Target::here`) — so the
         // service's comparison passes for the caller who authored the plan and
         // fails for one presenting it from somewhere else.
+        // The same condition the plan used to state the method, so the apply
+        // always states what was reviewed.
+        let wants_authorization = args.install_managed_settings;
+        let record = elevation::new_record();
+        if wants_authorization && matches!(args.admin_auth, AdminAuthArg::Terminal) {
+            session.client.set_elevation_handler(
+                Elevator::new(Mode::Install, plan.privileged_content_sha256(), record.clone())
+                    .assuming_yes(args.yes)
+                    .into_handler(),
+            );
+        }
+        let target = Target::here()?.with_authorization_method(if wants_authorization {
+            args.admin_auth.as_wire()
+        } else {
+            ""
+        });
         let applied = session
             .client
-            .apply(&args.tool, &plan.plan_id, Target::here()?.as_request())
+            .apply(&args.tool, &plan.plan_id, target.as_request())
             .await
-            .map_err(verb_failure)?;
+            .map_err(|e| elevation::failure_after(verb_failure(e), &record))?;
 
         // Read through the negotiated connection, which is where the DI-API
         // version gate lives. An older runtime states no outcome, and this

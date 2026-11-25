@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file devint.proto.
  */
 export const file_devint: GenFile = /*@__PURE__*/
-  fileDesc("CgxkZXZpbnQucHJvdG8SEmFzc2VtYmx5LmRldmludC52MSJwCgVIZWxsbxITCgtjbGllbnRfbmFtZRgBIAEoCRIWCg5jbGllbnRfdmVyc2lvbhgCIAEoCRIXCg9kaV9hcGlfdmVyc2lvbnMYAyADKA0SIQoZbGlmZWN5Y2xlX3NjaGVtYV92ZXJzaW9ucxgEIAMoDSLFAgoISGVsbG9BY2sSNwoHb3V0Y29tZRgBIAEoDjImLmFzc2VtYmx5LmRldmludC52MS5OZWdvdGlhdGlvbk91dGNvbWUSFgoOZGlfYXBpX3ZlcnNpb24YAiABKA0SFAoMY29yZV92ZXJzaW9uGAMgASgJEiAKGGxpZmVjeWNsZV9zY2hlbWFfdmVyc2lvbhgEIAEoDRIVCg1taW5fc3VwcG9ydGVkGAUgASgNEhUKDW1heF9zdXBwb3J0ZWQYBiABKA0SGQoRdW5hdmFpbGFibGVfdmVyYnMYByADKAkSFwoPZGVncmFkZWRfcmVhc29uGAggASgJEhMKC3JlbWVkaWF0aW9uGAkgASgJEjkKCnByb3ZlbmFuY2UYCiABKAsyJS5hc3NlbWJseS5kZXZpbnQudjEuUnVudGltZVByb3ZlbmFuY2UiygEKEVJ1bnRpbWVQcm92ZW5hbmNlEhQKDGNvcmVfdmVyc2lvbhgBIAEoCRIRCglidWlsZF9zaGEYAiABKAkSCwoDcGlkGAMgASgNEhcKD2V4ZWN1dGFibGVfcGF0aBgEIAEoCRIaChJleGVjdXRhYmxlX3ByZXNlbnQYBSABKAgSEwoLc291cmNlX3BhdGgYBiABKAkSHAoUc3RhcnRlZF9hdF91bml4X3NlY3MYByABKAQSFwoPYnVpbGRfaWRfc291cmNlGAggASgJImEKDEluY29tcGF0aWJsZRIOCgZyZWFzb24YASABKAkSEwoLcmVtZWRpYXRpb24YAiABKAkSFQoNbWluX3N1cHBvcnRlZBgDIAEoDRIVCg1tYXhfc3VwcG9ydGVkGAQgASgNIpkDCgdSZXF1ZXN0EhIKCnJlcXVlc3RfaWQYASABKAQSJgoEdmVyYhgCIAEoDjIYLmFzc2VtYmx5LmRldmludC52MS5WZXJiEhgKEGNhcGFiaWxpdHlfdG9rZW4YAyABKAkSDwoHdG9vbF9pZBgEIAEoCRIqCgRwbGFuGAUgASgLMhwuYXNzZW1ibHkuZGV2aW50LnYxLlBsYW5BcmdzEiwKBWFwcGx5GAYgASgLMh0uYXNzZW1ibHkuZGV2aW50LnYxLkFwcGx5QXJncxIuCgZyZW1vdmUYByABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuUmVtb3ZlQXJncxI0CgZldmVudHMYCCABKAsyJC5hc3NlbWJseS5kZXZpbnQudjEuU2NvcGVkRXZlbnRzQXJncxI3CghhcHByb3ZhbBgJIAEoCzIlLmFzc2VtYmx5LmRldmludC52MS5BcHByb3ZhbFJlbGF5QXJncxIuCgZ0YXJnZXQYCiABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuVGFyZ2V0QXJncyKNAQoKVGFyZ2V0QXJncxIWCg5zZXR0aW5nc19zY29wZRgBIAEoCRIUCgxwcm9qZWN0X3Jvb3QYAiABKAkSGwoTY2FsbGVyX2Vudl9leGFtaW5lZBgDIAMoCRIaChJjYWxsZXJfZW52X3ByZXNlbnQYBCADKAkSGAoQdXNlcl9jb25maWdfaG9tZRgFIAEoCSK8AQoIUGxhbkFyZ3MSDwoHcHJvZmlsZRgBIAEoCRIXCg9yZXF1ZXN0ZWRfbGV2ZWwYAiABKAkSFgoOc2V0dGluZ3Nfc2NvcGUYAyABKAkSIwobYWxsb3dfcHJpdmlsZWdlZF9ob3N0X3N0ZXBzGAQgASgIEhkKEXBvbGljeV9wcm9maWxlX2lkGAUgASgJEhQKDHByb2plY3Rfcm9vdBgGIAEoCRIYChB1c2VyX2NvbmZpZ19ob21lGAcgASgJIhwKCUFwcGx5QXJncxIPCgdwbGFuX2lkGAEgASgJIh0KClJlbW92ZUFyZ3MSDwoHcGxhbl9pZBgBIAEoCSI6ChBTY29wZWRFdmVudHNBcmdzEg0KBWxpbWl0GAEgASgNEhcKD3NpbmNlX3VuaXhfc2VjcxgCIAEoBCI8ChFBcHByb3ZhbFJlbGF5QXJncxITCgthcHByb3ZhbF9pZBgBIAEoCRISCgp1c2VyX2lucHV0GAIgASgJIowECghSZXNwb25zZRISCgpyZXF1ZXN0X2lkGAEgASgEEiYKBHZlcmIYAiABKA4yGC5hc3NlbWJseS5kZXZpbnQudjEuVmVyYhIvCgl0b29sX2xpc3QYAyABKAsyHC5hc3NlbWJseS5kZXZpbnQudjEuVG9vbExpc3QSKgoEcGxhbhgEIAEoCzIcLmFzc2VtYmx5LmRldmludC52MS5QbGFuVmlldxIsCgVhcHBseRgFIAEoCzIdLmFzc2VtYmx5LmRldmludC52MS5BcHBseVZpZXcSLgoGc3RhdHVzGAYgASgLMh4uYXNzZW1ibHkuZGV2aW50LnYxLlN0YXR1c1ZpZXcSOgoMdmVyaWZpY2F0aW9uGAcgASgLMiQuYXNzZW1ibHkuZGV2aW50LnYxLlZlcmlmaWNhdGlvblZpZXcSLgoGcmVwYWlyGAggASgLMh4uYXNzZW1ibHkuZGV2aW50LnYxLlJlcGFpclZpZXcSMAoHcmVtb3ZhbBgJIAEoCzIfLmFzc2VtYmx5LmRldmludC52MS5SZW1vdmFsVmlldxIzCgZldmVudHMYCiABKAsyIy5hc3NlbWJseS5kZXZpbnQudjEuU2NvcGVkRXZlbnRMaXN0EjYKCGFwcHJvdmFsGAsgASgLMiQuYXNzZW1ibHkuZGV2aW50LnYxLkFwcHJvdmFsUmVsYXlBY2sibgoGRGVuaWVkEhIKCnJlcXVlc3RfaWQYASABKAQSKgoEY29kZRgCIAEoDjIcLmFzc2VtYmx5LmRldmludC52MS5EZW55Q29kZRIPCgdtZXNzYWdlGAMgASgJEhMKC3JlbWVkaWF0aW9uGAQgASgJIkUKDkNhcGFiaWxpdHlWaWV3EhIKCmNhcGFiaWxpdHkYASABKAkSDwoHc3VwcG9ydBgCIAEoCRIOCgZyZWFzb24YAyABKAkiygEKC1Rvb2xTdW1tYXJ5Eg8KB3Rvb2xfaWQYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJEhAKCGRldGVjdGVkGAMgASgIEhgKEGRldGVjdGVkX3ZlcnNpb24YBCABKAkSFQoNY29tcGF0aWJpbGl0eRgFIAEoCRI4CgxjYXBhYmlsaXRpZXMYBiADKAsyIi5hc3NlbWJseS5kZXZpbnQudjEuQ2FwYWJpbGl0eVZpZXcSFwoPYWRhcHRlcl9jZWlsaW5nGAcgASgJIjoKCFRvb2xMaXN0Ei4KBXRvb2xzGAEgAygLMh8uYXNzZW1ibHkuZGV2aW50LnYxLlRvb2xTdW1tYXJ5Iu4BCghTdGVwVmlldxIKCgJpZBgBIAEoCRIPCgdzdW1tYXJ5GAIgASgJEhMKC2FjdGlvbl9raW5kGAMgASgJEhMKC3JlcXVpcmVtZW50GAQgASgJEhEKCXByaXZpbGVnZRgFIAEoCRIWCg5jb25zZW50X3Byb21wdBgGIAEoCRIWCg5zZXR0aW5nc19zY29wZRgHIAEoCRIUCgxtYW5hZ2VkX2tleXMYCCADKAkSFgoOYXJ0aWZhY3RfcGF0aHMYCSADKAkSFgoOY29udGVudF9zaGEyNTYYCiABKAkSEgoKcmV2ZXJzaWJsZRgLIAEoCCJIChRQb2xpY3lQcm9maWxlUmVmVmlldxIKCgJpZBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkSDgoGZGlnZXN0GAMgASgJIj4KGFVuc3VwcG9ydGVkTWVjaGFuaXNtVmlldxISCgpjYXBhYmlsaXR5GAEgASgJEg4KBnJlYXNvbhgCIAEoCSLhAgoIUGxhblZpZXcSFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SDwoHcGxhbl9pZBgCIAEoCRIPCgd0b29sX2lkGAMgASgJEg8KB3Byb2ZpbGUYBCABKAkSFgoOc2V0dGluZ3Nfc2NvcGUYBSABKAkSQAoOcG9saWN5X3Byb2ZpbGUYBiABKAsyKC5hc3NlbWJseS5kZXZpbnQudjEuUG9saWN5UHJvZmlsZVJlZlZpZXcSFQoNcGxhbm5lZF9sZXZlbBgHIAEoCRIXCg9hZGFwdGVyX2NlaWxpbmcYCCABKAkSKwoFc3RlcHMYCSADKAsyHC5hc3NlbWJseS5kZXZpbnQudjEuU3RlcFZpZXcSQQoLdW5zdXBwb3J0ZWQYCiADKAsyLC5hc3NlbWJseS5kZXZpbnQudjEuVW5zdXBwb3J0ZWRNZWNoYW5pc21WaWV3EhAKCHdhcm5pbmdzGAsgAygJIkgKD1N0ZXBPdXRjb21lVmlldxIPCgdzdGVwX2lkGAEgASgJEg8KB291dGNvbWUYAiABKAkSEwoLZmluZ2VycHJpbnQYAyABKAkiVwoQQXBwbHlPdXRjb21lVmlldxIzCghtdXRhdGlvbhgBIAEoDjIhLmFzc2VtYmx5LmRldmludC52MS5BcHBseU11dGF0aW9uEg4KBmRldGFpbBgCIAEoCSLoAQoJQXBwbHlWaWV3Eg8KB3BsYW5faWQYASABKAkSEgoKcmVjZWlwdF9pZBgCIAEoCRIcChRhcHBsaWVkX2F0X3VuaXhfc2VjcxgDIAEoBBIyCgVzdGVwcxgEIAMoCzIjLmFzc2VtYmx5LmRldmludC52MS5TdGVwT3V0Y29tZVZpZXcSFQoNcGxhbm5lZF9sZXZlbBgFIAEoCRIWCg5hY2hpZXZlZF9sZXZlbBgGIAEoCRI1CgdvdXRjb21lGAcgASgLMiQuYXNzZW1ibHkuZGV2aW50LnYxLkFwcGx5T3V0Y29tZVZpZXcibwoMRXZpZGVuY2VWaWV3EhEKCW1lY2hhbmlzbRgBIAEoCRIMCgRraW5kGAIgASgJEg8KB291dGNvbWUYAyABKAkSHQoVb2JzZXJ2ZWRfYXRfdW5peF9zZWNzGAQgASgEEg4KBmRldGFpbBgFIAEoCSI3Cg1OZXh0TGV2ZWxWaWV3Eg0KBWxldmVsGAEgASgJEhcKD2Jsb2NrZWRfYmVjYXVzZRgCIAEoCSI7CgpQb2xpY3lWaWV3Eg0KBXN0YXRlGAEgASgJEg4KBnNvdXJjZRgCIAEoCRIOCgZkZXRhaWwYAyABKAkinwMKClN0YXR1c1ZpZXcSDwoHdG9vbF9pZBgBIAEoCRINCgVwaGFzZRgCIAEoCRINCgVzdGF0ZRgDIAEoCRIWCg5hY2hpZXZlZF9sZXZlbBgEIAEoCRIVCg1wbGFubmVkX2xldmVsGAUgASgJEhcKD2FkYXB0ZXJfY2VpbGluZxgGIAEoCRIVCg1jb21wYXRpYmlsaXR5GAcgASgJEjIKCGV2aWRlbmNlGAggAygLMiAuYXNzZW1ibHkuZGV2aW50LnYxLkV2aWRlbmNlVmlldxI1CgpuZXh0X2xldmVsGAkgASgLMiEuYXNzZW1ibHkuZGV2aW50LnYxLk5leHRMZXZlbFZpZXcSHQoVb2JzZXJ2ZWRfYXRfdW5peF9zZWNzGAogASgEEhgKEGRyaWZ0X21pc21hdGNoZWQYCyADKAkSFAoMc3RhdGVfcmVhc29uGAwgASgJEhkKEXN0YXRlX3JlbWVkaWF0aW9uGA0gASgJEi4KBnBvbGljeRgOIAEoCzIeLmFzc2VtYmx5LmRldmludC52MS5Qb2xpY3lWaWV3IscBChBWZXJpZmljYXRpb25WaWV3Eh0KFXZlcmlmaWVkX2F0X3VuaXhfc2VjcxgBIAEoBBIPCgdvdXRjb21lGAIgASgJEg8KB21pc3NpbmcYAyADKAkSDgoGcmVhc29uGAQgASgJEjIKCGV2aWRlbmNlGAUgAygLMiAuYXNzZW1ibHkuZGV2aW50LnYxLkV2aWRlbmNlVmlldxIuCgZwb2xpY3kYBiABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuUG9saWN5VmlldyKjAQoKUmVwYWlyVmlldxIPCgd0b29sX2lkGAEgASgJEhAKCHJlcGFpcmVkGAIgAygJEkIKDHVucmVwYWlyYWJsZRgDIAMoCzIsLmFzc2VtYmx5LmRldmludC52MS5VbnN1cHBvcnRlZE1lY2hhbmlzbVZpZXcSLgoGc3RhdHVzGAQgASgLMh4uYXNzZW1ibHkuZGV2aW50LnYxLlN0YXR1c1ZpZXcimAEKC1JlbW92YWxWaWV3EhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEg8KB3BsYW5faWQYAiABKAkSDwoHdG9vbF9pZBgDIAEoCRIrCgVzdGVwcxgEIAMoCzIcLmFzc2VtYmx5LmRldmludC52MS5TdGVwVmlldxIQCghyZXNpZHVhbBgFIAMoCRIQCgh3YXJuaW5ncxgGIAMoCSJ+CgtTY29wZWRFdmVudBIdChVvY2N1cnJlZF9hdF91bml4X3NlY3MYASABKAQSFAoMdmVyZGljdF9raW5kGAIgASgJEhEKCW1lY2hhbmlzbRgDIAEoCRINCgVjb3VudBgEIAEoDRIYChByZWRhY3Rpb25fbGFiZWxzGAUgAygJIkIKD1Njb3BlZEV2ZW50TGlzdBIvCgZldmVudHMYASADKAsyHy5hc3NlbWJseS5kZXZpbnQudjEuU2NvcGVkRXZlbnQiXQoQQXBwcm92YWxSZWxheUFjaxITCgthcHByb3ZhbF9pZBgBIAEoCRIVCg1yZWxheWVkX2lucHV0GAIgASgJEh0KFWFjY2VwdGVkX2F0X3VuaXhfc2VjcxgDIAEoBCp+ChJOZWdvdGlhdGlvbk91dGNvbWUSIwofTkVHT1RJQVRJT05fT1VUQ09NRV9VTlNQRUNJRklFRBAAEiEKHU5FR09USUFUSU9OX09VVENPTUVfU1VQUE9SVEVEEAESIAocTkVHT1RJQVRJT05fT1VUQ09NRV9ERUdSQURFRBACKsUBCgRWZXJiEhQKEFZFUkJfVU5TUEVDSUZJRUQQABITCg9WRVJCX0xJU1RfVE9PTFMQARINCglWRVJCX1BMQU4QAhIOCgpWRVJCX0FQUExZEAMSDwoLVkVSQl9TVEFUVVMQBBIPCgtWRVJCX1ZFUklGWRAFEg8KC1ZFUkJfUkVQQUlSEAYSDwoLVkVSQl9SRU1PVkUQBxIWChJWRVJCX1NDT1BFRF9FVkVOVFMQCBIXChNWRVJCX0FQUFJPVkFMX1JFTEFZEAkqnAIKCERlbnlDb2RlEhkKFURFTllfQ09ERV9VTlNQRUNJRklFRBAAEh0KGURFTllfQ09ERV9VTkFVVEhFTlRJQ0FURUQQARIbChdERU5ZX0NPREVfVE9LRU5fRVhQSVJFRBACEhoKFkRFTllfQ09ERV9PVVRfT0ZfU0NPUEUQAxIaChZERU5ZX0NPREVfVU5LTk9XTl9WRVJCEAQSIAocREVOWV9DT0RFX1BST1RPQ09MX1ZJT0xBVElPThAFEiQKIERFTllfQ09ERV9VTkFWQUlMQUJMRV9BVF9WRVJTSU9OEAYSHQoZREVOWV9DT0RFX0xJRkVDWUNMRV9FUlJPUhAHEhoKFkRFTllfQ09ERV9VTktOT1dOX1RPT0wQCCqkAQoNQXBwbHlNdXRhdGlvbhIeChpBUFBMWV9NVVRBVElPTl9VTlNQRUNJRklFRBAAEhoKFkFQUExZX01VVEFUSU9OX0NIQU5HRUQQARIcChhBUFBMWV9NVVRBVElPTl9VTkNIQU5HRUQQAhIZChVBUFBMWV9NVVRBVElPTl9GQUlMRUQQAxIeChpBUFBMWV9NVVRBVElPTl9VTlNVUFBPUlRFRBAEYgZwcm90bzM");
+  fileDesc("CgxkZXZpbnQucHJvdG8SEmFzc2VtYmx5LmRldmludC52MSJwCgVIZWxsbxITCgtjbGllbnRfbmFtZRgBIAEoCRIWCg5jbGllbnRfdmVyc2lvbhgCIAEoCRIXCg9kaV9hcGlfdmVyc2lvbnMYAyADKA0SIQoZbGlmZWN5Y2xlX3NjaGVtYV92ZXJzaW9ucxgEIAMoDSLFAgoISGVsbG9BY2sSNwoHb3V0Y29tZRgBIAEoDjImLmFzc2VtYmx5LmRldmludC52MS5OZWdvdGlhdGlvbk91dGNvbWUSFgoOZGlfYXBpX3ZlcnNpb24YAiABKA0SFAoMY29yZV92ZXJzaW9uGAMgASgJEiAKGGxpZmVjeWNsZV9zY2hlbWFfdmVyc2lvbhgEIAEoDRIVCg1taW5fc3VwcG9ydGVkGAUgASgNEhUKDW1heF9zdXBwb3J0ZWQYBiABKA0SGQoRdW5hdmFpbGFibGVfdmVyYnMYByADKAkSFwoPZGVncmFkZWRfcmVhc29uGAggASgJEhMKC3JlbWVkaWF0aW9uGAkgASgJEjkKCnByb3ZlbmFuY2UYCiABKAsyJS5hc3NlbWJseS5kZXZpbnQudjEuUnVudGltZVByb3ZlbmFuY2UiygEKEVJ1bnRpbWVQcm92ZW5hbmNlEhQKDGNvcmVfdmVyc2lvbhgBIAEoCRIRCglidWlsZF9zaGEYAiABKAkSCwoDcGlkGAMgASgNEhcKD2V4ZWN1dGFibGVfcGF0aBgEIAEoCRIaChJleGVjdXRhYmxlX3ByZXNlbnQYBSABKAgSEwoLc291cmNlX3BhdGgYBiABKAkSHAoUc3RhcnRlZF9hdF91bml4X3NlY3MYByABKAQSFwoPYnVpbGRfaWRfc291cmNlGAggASgJImEKDEluY29tcGF0aWJsZRIOCgZyZWFzb24YASABKAkSEwoLcmVtZWRpYXRpb24YAiABKAkSFQoNbWluX3N1cHBvcnRlZBgDIAEoDRIVCg1tYXhfc3VwcG9ydGVkGAQgASgNIpkDCgdSZXF1ZXN0EhIKCnJlcXVlc3RfaWQYASABKAQSJgoEdmVyYhgCIAEoDjIYLmFzc2VtYmx5LmRldmludC52MS5WZXJiEhgKEGNhcGFiaWxpdHlfdG9rZW4YAyABKAkSDwoHdG9vbF9pZBgEIAEoCRIqCgRwbGFuGAUgASgLMhwuYXNzZW1ibHkuZGV2aW50LnYxLlBsYW5BcmdzEiwKBWFwcGx5GAYgASgLMh0uYXNzZW1ibHkuZGV2aW50LnYxLkFwcGx5QXJncxIuCgZyZW1vdmUYByABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuUmVtb3ZlQXJncxI0CgZldmVudHMYCCABKAsyJC5hc3NlbWJseS5kZXZpbnQudjEuU2NvcGVkRXZlbnRzQXJncxI3CghhcHByb3ZhbBgJIAEoCzIlLmFzc2VtYmx5LmRldmludC52MS5BcHByb3ZhbFJlbGF5QXJncxIuCgZ0YXJnZXQYCiABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuVGFyZ2V0QXJncyKrAQoKVGFyZ2V0QXJncxIWCg5zZXR0aW5nc19zY29wZRgBIAEoCRIUCgxwcm9qZWN0X3Jvb3QYAiABKAkSGwoTY2FsbGVyX2Vudl9leGFtaW5lZBgDIAMoCRIaChJjYWxsZXJfZW52X3ByZXNlbnQYBCADKAkSGAoQdXNlcl9jb25maWdfaG9tZRgFIAEoCRIcChRhdXRob3JpemF0aW9uX21ldGhvZBgGIAEoCSLaAQoIUGxhbkFyZ3MSDwoHcHJvZmlsZRgBIAEoCRIXCg9yZXF1ZXN0ZWRfbGV2ZWwYAiABKAkSFgoOc2V0dGluZ3Nfc2NvcGUYAyABKAkSIwobYWxsb3dfcHJpdmlsZWdlZF9ob3N0X3N0ZXBzGAQgASgIEhkKEXBvbGljeV9wcm9maWxlX2lkGAUgASgJEhQKDHByb2plY3Rfcm9vdBgGIAEoCRIYChB1c2VyX2NvbmZpZ19ob21lGAcgASgJEhwKFGF1dGhvcml6YXRpb25fbWV0aG9kGAggASgJIhwKCUFwcGx5QXJncxIPCgdwbGFuX2lkGAEgASgJIh0KClJlbW92ZUFyZ3MSDwoHcGxhbl9pZBgBIAEoCSI6ChBTY29wZWRFdmVudHNBcmdzEg0KBWxpbWl0GAEgASgNEhcKD3NpbmNlX3VuaXhfc2VjcxgCIAEoBCI8ChFBcHByb3ZhbFJlbGF5QXJncxITCgthcHByb3ZhbF9pZBgBIAEoCRISCgp1c2VyX2lucHV0GAIgASgJIowECghSZXNwb25zZRISCgpyZXF1ZXN0X2lkGAEgASgEEiYKBHZlcmIYAiABKA4yGC5hc3NlbWJseS5kZXZpbnQudjEuVmVyYhIvCgl0b29sX2xpc3QYAyABKAsyHC5hc3NlbWJseS5kZXZpbnQudjEuVG9vbExpc3QSKgoEcGxhbhgEIAEoCzIcLmFzc2VtYmx5LmRldmludC52MS5QbGFuVmlldxIsCgVhcHBseRgFIAEoCzIdLmFzc2VtYmx5LmRldmludC52MS5BcHBseVZpZXcSLgoGc3RhdHVzGAYgASgLMh4uYXNzZW1ibHkuZGV2aW50LnYxLlN0YXR1c1ZpZXcSOgoMdmVyaWZpY2F0aW9uGAcgASgLMiQuYXNzZW1ibHkuZGV2aW50LnYxLlZlcmlmaWNhdGlvblZpZXcSLgoGcmVwYWlyGAggASgLMh4uYXNzZW1ibHkuZGV2aW50LnYxLlJlcGFpclZpZXcSMAoHcmVtb3ZhbBgJIAEoCzIfLmFzc2VtYmx5LmRldmludC52MS5SZW1vdmFsVmlldxIzCgZldmVudHMYCiABKAsyIy5hc3NlbWJseS5kZXZpbnQudjEuU2NvcGVkRXZlbnRMaXN0EjYKCGFwcHJvdmFsGAsgASgLMiQuYXNzZW1ibHkuZGV2aW50LnYxLkFwcHJvdmFsUmVsYXlBY2sibgoGRGVuaWVkEhIKCnJlcXVlc3RfaWQYASABKAQSKgoEY29kZRgCIAEoDjIcLmFzc2VtYmx5LmRldmludC52MS5EZW55Q29kZRIPCgdtZXNzYWdlGAMgASgJEhMKC3JlbWVkaWF0aW9uGAQgASgJItwBChBFbGV2YXRpb25SZXF1ZXN0EhIKCnJlcXVlc3RfaWQYASABKAQSEAoIc2VxdWVuY2UYAiABKA0SLwoEa2luZBgDIAEoDjIhLmFzc2VtYmx5LmRldmludC52MS5FbGV2YXRpb25LaW5kEjUKB3B1cnBvc2UYBCABKA4yJC5hc3NlbWJseS5kZXZpbnQudjEuRWxldmF0aW9uUHVycG9zZRIOCgZ0YXJnZXQYBSABKAkSEwoLc3RhZ2VkX3BhdGgYBiABKAkSFQoNc3RhZ2VkX3NoYTI1NhgHIAEoCSKBAQoPRWxldmF0aW9uUmVzdWx0EhIKCnJlcXVlc3RfaWQYASABKAQSEAoIc2VxdWVuY2UYAiABKA0SOAoHb3V0Y29tZRgDIAEoDjInLmFzc2VtYmx5LmRldmludC52MS5FbGV2YXRpb25SZXN1bHRDb2RlEg4KBmRldGFpbBgEIAEoCSJFCg5DYXBhYmlsaXR5VmlldxISCgpjYXBhYmlsaXR5GAEgASgJEg8KB3N1cHBvcnQYAiABKAkSDgoGcmVhc29uGAMgASgJIsoBCgtUb29sU3VtbWFyeRIPCgd0b29sX2lkGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCRIQCghkZXRlY3RlZBgDIAEoCBIYChBkZXRlY3RlZF92ZXJzaW9uGAQgASgJEhUKDWNvbXBhdGliaWxpdHkYBSABKAkSOAoMY2FwYWJpbGl0aWVzGAYgAygLMiIuYXNzZW1ibHkuZGV2aW50LnYxLkNhcGFiaWxpdHlWaWV3EhcKD2FkYXB0ZXJfY2VpbGluZxgHIAEoCSI6CghUb29sTGlzdBIuCgV0b29scxgBIAMoCzIfLmFzc2VtYmx5LmRldmludC52MS5Ub29sU3VtbWFyeSLuAQoIU3RlcFZpZXcSCgoCaWQYASABKAkSDwoHc3VtbWFyeRgCIAEoCRITCgthY3Rpb25fa2luZBgDIAEoCRITCgtyZXF1aXJlbWVudBgEIAEoCRIRCglwcml2aWxlZ2UYBSABKAkSFgoOY29uc2VudF9wcm9tcHQYBiABKAkSFgoOc2V0dGluZ3Nfc2NvcGUYByABKAkSFAoMbWFuYWdlZF9rZXlzGAggAygJEhYKDmFydGlmYWN0X3BhdGhzGAkgAygJEhYKDmNvbnRlbnRfc2hhMjU2GAogASgJEhIKCnJldmVyc2libGUYCyABKAgiSAoUUG9saWN5UHJvZmlsZVJlZlZpZXcSCgoCaWQYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJEg4KBmRpZ2VzdBgDIAEoCSI+ChhVbnN1cHBvcnRlZE1lY2hhbmlzbVZpZXcSEgoKY2FwYWJpbGl0eRgBIAEoCRIOCgZyZWFzb24YAiABKAki4QIKCFBsYW5WaWV3EhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEg8KB3BsYW5faWQYAiABKAkSDwoHdG9vbF9pZBgDIAEoCRIPCgdwcm9maWxlGAQgASgJEhYKDnNldHRpbmdzX3Njb3BlGAUgASgJEkAKDnBvbGljeV9wcm9maWxlGAYgASgLMiguYXNzZW1ibHkuZGV2aW50LnYxLlBvbGljeVByb2ZpbGVSZWZWaWV3EhUKDXBsYW5uZWRfbGV2ZWwYByABKAkSFwoPYWRhcHRlcl9jZWlsaW5nGAggASgJEisKBXN0ZXBzGAkgAygLMhwuYXNzZW1ibHkuZGV2aW50LnYxLlN0ZXBWaWV3EkEKC3Vuc3VwcG9ydGVkGAogAygLMiwuYXNzZW1ibHkuZGV2aW50LnYxLlVuc3VwcG9ydGVkTWVjaGFuaXNtVmlldxIQCgh3YXJuaW5ncxgLIAMoCSJICg9TdGVwT3V0Y29tZVZpZXcSDwoHc3RlcF9pZBgBIAEoCRIPCgdvdXRjb21lGAIgASgJEhMKC2ZpbmdlcnByaW50GAMgASgJIlcKEEFwcGx5T3V0Y29tZVZpZXcSMwoIbXV0YXRpb24YASABKA4yIS5hc3NlbWJseS5kZXZpbnQudjEuQXBwbHlNdXRhdGlvbhIOCgZkZXRhaWwYAiABKAki6AEKCUFwcGx5VmlldxIPCgdwbGFuX2lkGAEgASgJEhIKCnJlY2VpcHRfaWQYAiABKAkSHAoUYXBwbGllZF9hdF91bml4X3NlY3MYAyABKAQSMgoFc3RlcHMYBCADKAsyIy5hc3NlbWJseS5kZXZpbnQudjEuU3RlcE91dGNvbWVWaWV3EhUKDXBsYW5uZWRfbGV2ZWwYBSABKAkSFgoOYWNoaWV2ZWRfbGV2ZWwYBiABKAkSNQoHb3V0Y29tZRgHIAEoCzIkLmFzc2VtYmx5LmRldmludC52MS5BcHBseU91dGNvbWVWaWV3Im8KDEV2aWRlbmNlVmlldxIRCgltZWNoYW5pc20YASABKAkSDAoEa2luZBgCIAEoCRIPCgdvdXRjb21lGAMgASgJEh0KFW9ic2VydmVkX2F0X3VuaXhfc2VjcxgEIAEoBBIOCgZkZXRhaWwYBSABKAkiNwoNTmV4dExldmVsVmlldxINCgVsZXZlbBgBIAEoCRIXCg9ibG9ja2VkX2JlY2F1c2UYAiABKAkiOwoKUG9saWN5VmlldxINCgVzdGF0ZRgBIAEoCRIOCgZzb3VyY2UYAiABKAkSDgoGZGV0YWlsGAMgASgJIp8DCgpTdGF0dXNWaWV3Eg8KB3Rvb2xfaWQYASABKAkSDQoFcGhhc2UYAiABKAkSDQoFc3RhdGUYAyABKAkSFgoOYWNoaWV2ZWRfbGV2ZWwYBCABKAkSFQoNcGxhbm5lZF9sZXZlbBgFIAEoCRIXCg9hZGFwdGVyX2NlaWxpbmcYBiABKAkSFQoNY29tcGF0aWJpbGl0eRgHIAEoCRIyCghldmlkZW5jZRgIIAMoCzIgLmFzc2VtYmx5LmRldmludC52MS5FdmlkZW5jZVZpZXcSNQoKbmV4dF9sZXZlbBgJIAEoCzIhLmFzc2VtYmx5LmRldmludC52MS5OZXh0TGV2ZWxWaWV3Eh0KFW9ic2VydmVkX2F0X3VuaXhfc2VjcxgKIAEoBBIYChBkcmlmdF9taXNtYXRjaGVkGAsgAygJEhQKDHN0YXRlX3JlYXNvbhgMIAEoCRIZChFzdGF0ZV9yZW1lZGlhdGlvbhgNIAEoCRIuCgZwb2xpY3kYDiABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuUG9saWN5VmlldyLHAQoQVmVyaWZpY2F0aW9uVmlldxIdChV2ZXJpZmllZF9hdF91bml4X3NlY3MYASABKAQSDwoHb3V0Y29tZRgCIAEoCRIPCgdtaXNzaW5nGAMgAygJEg4KBnJlYXNvbhgEIAEoCRIyCghldmlkZW5jZRgFIAMoCzIgLmFzc2VtYmx5LmRldmludC52MS5FdmlkZW5jZVZpZXcSLgoGcG9saWN5GAYgASgLMh4uYXNzZW1ibHkuZGV2aW50LnYxLlBvbGljeVZpZXciowEKClJlcGFpclZpZXcSDwoHdG9vbF9pZBgBIAEoCRIQCghyZXBhaXJlZBgCIAMoCRJCCgx1bnJlcGFpcmFibGUYAyADKAsyLC5hc3NlbWJseS5kZXZpbnQudjEuVW5zdXBwb3J0ZWRNZWNoYW5pc21WaWV3Ei4KBnN0YXR1cxgEIAEoCzIeLmFzc2VtYmx5LmRldmludC52MS5TdGF0dXNWaWV3IpgBCgtSZW1vdmFsVmlldxIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRIPCgdwbGFuX2lkGAIgASgJEg8KB3Rvb2xfaWQYAyABKAkSKwoFc3RlcHMYBCADKAsyHC5hc3NlbWJseS5kZXZpbnQudjEuU3RlcFZpZXcSEAoIcmVzaWR1YWwYBSADKAkSEAoId2FybmluZ3MYBiADKAkifgoLU2NvcGVkRXZlbnQSHQoVb2NjdXJyZWRfYXRfdW5peF9zZWNzGAEgASgEEhQKDHZlcmRpY3Rfa2luZBgCIAEoCRIRCgltZWNoYW5pc20YAyABKAkSDQoFY291bnQYBCABKA0SGAoQcmVkYWN0aW9uX2xhYmVscxgFIAMoCSJCCg9TY29wZWRFdmVudExpc3QSLwoGZXZlbnRzGAEgAygLMh8uYXNzZW1ibHkuZGV2aW50LnYxLlNjb3BlZEV2ZW50Il0KEEFwcHJvdmFsUmVsYXlBY2sSEwoLYXBwcm92YWxfaWQYASABKAkSFQoNcmVsYXllZF9pbnB1dBgCIAEoCRIdChVhY2NlcHRlZF9hdF91bml4X3NlY3MYAyABKAQqfgoSTmVnb3RpYXRpb25PdXRjb21lEiMKH05FR09USUFUSU9OX09VVENPTUVfVU5TUEVDSUZJRUQQABIhCh1ORUdPVElBVElPTl9PVVRDT01FX1NVUFBPUlRFRBABEiAKHE5FR09USUFUSU9OX09VVENPTUVfREVHUkFERUQQAirFAQoEVmVyYhIUChBWRVJCX1VOU1BFQ0lGSUVEEAASEwoPVkVSQl9MSVNUX1RPT0xTEAESDQoJVkVSQl9QTEFOEAISDgoKVkVSQl9BUFBMWRADEg8KC1ZFUkJfU1RBVFVTEAQSDwoLVkVSQl9WRVJJRlkQBRIPCgtWRVJCX1JFUEFJUhAGEg8KC1ZFUkJfUkVNT1ZFEAcSFgoSVkVSQl9TQ09QRURfRVZFTlRTEAgSFwoTVkVSQl9BUFBST1ZBTF9SRUxBWRAJKpwCCghEZW55Q29kZRIZChVERU5ZX0NPREVfVU5TUEVDSUZJRUQQABIdChlERU5ZX0NPREVfVU5BVVRIRU5USUNBVEVEEAESGwoXREVOWV9DT0RFX1RPS0VOX0VYUElSRUQQAhIaChZERU5ZX0NPREVfT1VUX09GX1NDT1BFEAMSGgoWREVOWV9DT0RFX1VOS05PV05fVkVSQhAEEiAKHERFTllfQ09ERV9QUk9UT0NPTF9WSU9MQVRJT04QBRIkCiBERU5ZX0NPREVfVU5BVkFJTEFCTEVfQVRfVkVSU0lPThAGEh0KGURFTllfQ09ERV9MSUZFQ1lDTEVfRVJST1IQBxIaChZERU5ZX0NPREVfVU5LTk9XTl9UT09MEAgqcAoNRWxldmF0aW9uS2luZBIeChpFTEVWQVRJT05fS0lORF9VTlNQRUNJRklFRBAAEh8KG0VMRVZBVElPTl9LSU5EX0lOU1RBTExfRklMRRABEh4KGkVMRVZBVElPTl9LSU5EX0RFTEVURV9GSUxFEAIqnwEKEEVsZXZhdGlvblB1cnBvc2USIQodRUxFVkFUSU9OX1BVUlBPU0VfVU5TUEVDSUZJRUQQABIkCiBFTEVWQVRJT05fUFVSUE9TRV9QTEFDRV9SRVZJRVdFRBABEiQKIEVMRVZBVElPTl9QVVJQT1NFX1JFU1RPUkVfQkFDS1VQEAISHAoYRUxFVkFUSU9OX1BVUlBPU0VfUkVNT1ZFEAMq+gEKE0VsZXZhdGlvblJlc3VsdENvZGUSJQohRUxFVkFUSU9OX1JFU1VMVF9DT0RFX1VOU1BFQ0lGSUVEEAASIwofRUxFVkFUSU9OX1JFU1VMVF9DT0RFX0NPTVBMRVRFRBABEiAKHEVMRVZBVElPTl9SRVNVTFRfQ09ERV9ERU5JRUQQAhIjCh9FTEVWQVRJT05fUkVTVUxUX0NPREVfQ0FOQ0VMTEVEEAMSJQohRUxFVkFUSU9OX1JFU1VMVF9DT0RFX1VOQVZBSUxBQkxFEAQSKQolRUxFVkFUSU9OX1JFU1VMVF9DT0RFX05PTl9JTlRFUkFDVElWRRAFKqQBCg1BcHBseU11dGF0aW9uEh4KGkFQUExZX01VVEFUSU9OX1VOU1BFQ0lGSUVEEAASGgoWQVBQTFlfTVVUQVRJT05fQ0hBTkdFRBABEhwKGEFQUExZX01VVEFUSU9OX1VOQ0hBTkdFRBACEhkKFUFQUExZX01VVEFUSU9OX0ZBSUxFRBADEh4KGkFQUExZX01VVEFUSU9OX1VOU1VQUE9SVEVEEARiBnByb3RvMw");
 
 /**
  * Hello — client → server, the first frame on every connection. No lifecycle
@@ -483,6 +483,18 @@ export type TargetArgs = Message<"assembly.devint.v1.TargetArgs"> & {
    * @generated from field: string user_config_home = 5;
    */
   userConfigHome: string;
+
+  /**
+   * How administrator authorization is obtained for a privileged host step:
+   * "terminal" | "gui" (AAASM-6491). Empty means the caller did not say.
+   *
+   * Requires DI-API 8 (`DI_API_TERMINAL_ELEVATION_SINCE`). A pre-v8 runtime
+   * discards this field and opens the macOS GUI dialog regardless, so a client
+   * must refuse "terminal" below v8 rather than send it and hope.
+   *
+   * @generated from field: string authorization_method = 6;
+   */
+  authorizationMethod: string;
 };
 
 /**
@@ -602,6 +614,15 @@ export type PlanArgs = Message<"assembly.devint.v1.PlanArgs"> & {
    * @generated from field: string user_config_home = 7;
    */
   userConfigHome: string;
+
+  /**
+   * "terminal" | "gui" | empty (AAASM-6491). Recorded in the authored plan and
+   * re-checked at apply: a plan reviewed under one method is never executed
+   * under another. Requires DI-API 8; see `TargetArgs.authorization_method`.
+   *
+   * @generated from field: string authorization_method = 8;
+   */
+  authorizationMethod: string;
 };
 
 /**
@@ -804,6 +825,99 @@ export const DeniedSchema: GenMessage<Denied> = /*@__PURE__*/
   messageDesc(file_devint, 12);
 
 /**
+ * ElevationRequest — runtime → client, tag 5, sent on the connection that
+ * carries an in-flight Apply/Remove/Repair, and only when the connection
+ * negotiated DI-API 8 or newer. Paths and digests only: no content, no command.
+ * The client acts on its own canonical target path, never on `target`.
+ *
+ * @generated from message assembly.devint.v1.ElevationRequest
+ */
+export type ElevationRequest = Message<"assembly.devint.v1.ElevationRequest"> & {
+  /**
+   * The in-flight request this belongs to.
+   *
+   * @generated from field: uint64 request_id = 1;
+   */
+  requestId: bigint;
+
+  /**
+   * Strictly increasing per request; the result must echo it.
+   *
+   * @generated from field: uint32 sequence = 2;
+   */
+  sequence: number;
+
+  /**
+   * @generated from field: assembly.devint.v1.ElevationKind kind = 3;
+   */
+  kind: ElevationKind;
+
+  /**
+   * @generated from field: assembly.devint.v1.ElevationPurpose purpose = 4;
+   */
+  purpose: ElevationPurpose;
+
+  /**
+   * @generated from field: string target = 5;
+   */
+  target: string;
+
+  /**
+   * @generated from field: string staged_path = 6;
+   */
+  stagedPath: string;
+
+  /**
+   * @generated from field: string staged_sha256 = 7;
+   */
+  stagedSha256: string;
+};
+
+/**
+ * Describes the message assembly.devint.v1.ElevationRequest.
+ * Use `create(ElevationRequestSchema)` to create a new message.
+ */
+export const ElevationRequestSchema: GenMessage<ElevationRequest> = /*@__PURE__*/
+  messageDesc(file_devint, 13);
+
+/**
+ * ElevationResult — client → runtime, tag 3, the only frame a client may send
+ * while a request is in flight.
+ *
+ * @generated from message assembly.devint.v1.ElevationResult
+ */
+export type ElevationResult = Message<"assembly.devint.v1.ElevationResult"> & {
+  /**
+   * @generated from field: uint64 request_id = 1;
+   */
+  requestId: bigint;
+
+  /**
+   * @generated from field: uint32 sequence = 2;
+   */
+  sequence: number;
+
+  /**
+   * @generated from field: assembly.devint.v1.ElevationResultCode outcome = 3;
+   */
+  outcome: ElevationResultCode;
+
+  /**
+   * Operator-facing text. Never a password; display only.
+   *
+   * @generated from field: string detail = 4;
+   */
+  detail: string;
+};
+
+/**
+ * Describes the message assembly.devint.v1.ElevationResult.
+ * Use `create(ElevationResultSchema)` to create a new message.
+ */
+export const ElevationResultSchema: GenMessage<ElevationResult> = /*@__PURE__*/
+  messageDesc(file_devint, 14);
+
+/**
  * @generated from message assembly.devint.v1.CapabilityView
  */
 export type CapabilityView = Message<"assembly.devint.v1.CapabilityView"> & {
@@ -834,7 +948,7 @@ export type CapabilityView = Message<"assembly.devint.v1.CapabilityView"> & {
  * Use `create(CapabilityViewSchema)` to create a new message.
  */
 export const CapabilityViewSchema: GenMessage<CapabilityView> = /*@__PURE__*/
-  messageDesc(file_devint, 13);
+  messageDesc(file_devint, 15);
 
 /**
  * @generated from message assembly.devint.v1.ToolSummary
@@ -887,7 +1001,7 @@ export type ToolSummary = Message<"assembly.devint.v1.ToolSummary"> & {
  * Use `create(ToolSummarySchema)` to create a new message.
  */
 export const ToolSummarySchema: GenMessage<ToolSummary> = /*@__PURE__*/
-  messageDesc(file_devint, 14);
+  messageDesc(file_devint, 16);
 
 /**
  * @generated from message assembly.devint.v1.ToolList
@@ -904,7 +1018,7 @@ export type ToolList = Message<"assembly.devint.v1.ToolList"> & {
  * Use `create(ToolListSchema)` to create a new message.
  */
 export const ToolListSchema: GenMessage<ToolList> = /*@__PURE__*/
-  messageDesc(file_devint, 15);
+  messageDesc(file_devint, 17);
 
 /**
  * A plan step, projected for review.
@@ -1003,7 +1117,7 @@ export type StepView = Message<"assembly.devint.v1.StepView"> & {
  * Use `create(StepViewSchema)` to create a new message.
  */
 export const StepViewSchema: GenMessage<StepView> = /*@__PURE__*/
-  messageDesc(file_devint, 16);
+  messageDesc(file_devint, 18);
 
 /**
  * A policy profile named by reference rather than by content: enough to
@@ -1033,7 +1147,7 @@ export type PolicyProfileRefView = Message<"assembly.devint.v1.PolicyProfileRefV
  * Use `create(PolicyProfileRefViewSchema)` to create a new message.
  */
 export const PolicyProfileRefViewSchema: GenMessage<PolicyProfileRefView> = /*@__PURE__*/
-  messageDesc(file_devint, 17);
+  messageDesc(file_devint, 19);
 
 /**
  * @generated from message assembly.devint.v1.UnsupportedMechanismView
@@ -1055,7 +1169,7 @@ export type UnsupportedMechanismView = Message<"assembly.devint.v1.UnsupportedMe
  * Use `create(UnsupportedMechanismViewSchema)` to create a new message.
  */
 export const UnsupportedMechanismViewSchema: GenMessage<UnsupportedMechanismView> = /*@__PURE__*/
-  messageDesc(file_devint, 18);
+  messageDesc(file_devint, 20);
 
 /**
  * @generated from message assembly.devint.v1.PlanView
@@ -1122,7 +1236,7 @@ export type PlanView = Message<"assembly.devint.v1.PlanView"> & {
  * Use `create(PlanViewSchema)` to create a new message.
  */
 export const PlanViewSchema: GenMessage<PlanView> = /*@__PURE__*/
-  messageDesc(file_devint, 19);
+  messageDesc(file_devint, 21);
 
 /**
  * @generated from message assembly.devint.v1.StepOutcomeView
@@ -1153,7 +1267,7 @@ export type StepOutcomeView = Message<"assembly.devint.v1.StepOutcomeView"> & {
  * Use `create(StepOutcomeViewSchema)` to create a new message.
  */
 export const StepOutcomeViewSchema: GenMessage<StepOutcomeView> = /*@__PURE__*/
-  messageDesc(file_devint, 20);
+  messageDesc(file_devint, 22);
 
 /**
  * The apply outcome, carried as a MESSAGE so its absence is explicit.
@@ -1187,7 +1301,7 @@ export type ApplyOutcomeView = Message<"assembly.devint.v1.ApplyOutcomeView"> & 
  * Use `create(ApplyOutcomeViewSchema)` to create a new message.
  */
 export const ApplyOutcomeViewSchema: GenMessage<ApplyOutcomeView> = /*@__PURE__*/
-  messageDesc(file_devint, 21);
+  messageDesc(file_devint, 23);
 
 /**
  * @generated from message assembly.devint.v1.ApplyView
@@ -1246,7 +1360,7 @@ export type ApplyView = Message<"assembly.devint.v1.ApplyView"> & {
  * Use `create(ApplyViewSchema)` to create a new message.
  */
 export const ApplyViewSchema: GenMessage<ApplyView> = /*@__PURE__*/
-  messageDesc(file_devint, 22);
+  messageDesc(file_devint, 24);
 
 /**
  * One observation, with the timestamp that makes it "verified at T" rather
@@ -1292,7 +1406,7 @@ export type EvidenceView = Message<"assembly.devint.v1.EvidenceView"> & {
  * Use `create(EvidenceViewSchema)` to create a new message.
  */
 export const EvidenceViewSchema: GenMessage<EvidenceView> = /*@__PURE__*/
-  messageDesc(file_devint, 23);
+  messageDesc(file_devint, 25);
 
 /**
  * @generated from message assembly.devint.v1.NextLevelView
@@ -1314,7 +1428,7 @@ export type NextLevelView = Message<"assembly.devint.v1.NextLevelView"> & {
  * Use `create(NextLevelViewSchema)` to create a new message.
  */
 export const NextLevelViewSchema: GenMessage<NextLevelView> = /*@__PURE__*/
-  messageDesc(file_devint, 24);
+  messageDesc(file_devint, 26);
 
 /**
  * Which policy a governed launch would run under, as the service resolved it
@@ -1359,7 +1473,7 @@ export type PolicyView = Message<"assembly.devint.v1.PolicyView"> & {
  * Use `create(PolicyViewSchema)` to create a new message.
  */
 export const PolicyViewSchema: GenMessage<PolicyView> = /*@__PURE__*/
-  messageDesc(file_devint, 25);
+  messageDesc(file_devint, 27);
 
 /**
  * @generated from message assembly.devint.v1.StatusView
@@ -1454,7 +1568,7 @@ export type StatusView = Message<"assembly.devint.v1.StatusView"> & {
  * Use `create(StatusViewSchema)` to create a new message.
  */
 export const StatusViewSchema: GenMessage<StatusView> = /*@__PURE__*/
-  messageDesc(file_devint, 26);
+  messageDesc(file_devint, 28);
 
 /**
  * @generated from message assembly.devint.v1.VerificationView
@@ -1504,7 +1618,7 @@ export type VerificationView = Message<"assembly.devint.v1.VerificationView"> & 
  * Use `create(VerificationViewSchema)` to create a new message.
  */
 export const VerificationViewSchema: GenMessage<VerificationView> = /*@__PURE__*/
-  messageDesc(file_devint, 27);
+  messageDesc(file_devint, 29);
 
 /**
  * @generated from message assembly.devint.v1.RepairView
@@ -1540,7 +1654,7 @@ export type RepairView = Message<"assembly.devint.v1.RepairView"> & {
  * Use `create(RepairViewSchema)` to create a new message.
  */
 export const RepairViewSchema: GenMessage<RepairView> = /*@__PURE__*/
-  messageDesc(file_devint, 28);
+  messageDesc(file_devint, 30);
 
 /**
  * @generated from message assembly.devint.v1.RemovalView
@@ -1584,7 +1698,7 @@ export type RemovalView = Message<"assembly.devint.v1.RemovalView"> & {
  * Use `create(RemovalViewSchema)` to create a new message.
  */
 export const RemovalViewSchema: GenMessage<RemovalView> = /*@__PURE__*/
-  messageDesc(file_devint, 29);
+  messageDesc(file_devint, 31);
 
 /**
  * An integration-scoped, already-redacted security-event projection.
@@ -1634,7 +1748,7 @@ export type ScopedEvent = Message<"assembly.devint.v1.ScopedEvent"> & {
  * Use `create(ScopedEventSchema)` to create a new message.
  */
 export const ScopedEventSchema: GenMessage<ScopedEvent> = /*@__PURE__*/
-  messageDesc(file_devint, 30);
+  messageDesc(file_devint, 32);
 
 /**
  * @generated from message assembly.devint.v1.ScopedEventList
@@ -1651,7 +1765,7 @@ export type ScopedEventList = Message<"assembly.devint.v1.ScopedEventList"> & {
  * Use `create(ScopedEventListSchema)` to create a new message.
  */
 export const ScopedEventListSchema: GenMessage<ScopedEventList> = /*@__PURE__*/
-  messageDesc(file_devint, 31);
+  messageDesc(file_devint, 33);
 
 /**
  * Acknowledgement that a human's input was relayed to the decision authority.
@@ -1687,7 +1801,7 @@ export type ApprovalRelayAck = Message<"assembly.devint.v1.ApprovalRelayAck"> & 
  * Use `create(ApprovalRelayAckSchema)` to create a new message.
  */
 export const ApprovalRelayAckSchema: GenMessage<ApprovalRelayAck> = /*@__PURE__*/
-  messageDesc(file_devint, 32);
+  messageDesc(file_devint, 34);
 
 /**
  * Whether the negotiated version gives the client the whole verb space.
@@ -1897,6 +2011,112 @@ export const DenyCodeSchema: GenEnum<DenyCode> = /*@__PURE__*/
   enumDesc(file_devint, 2);
 
 /**
+ * What the runtime asks the client to run as administrator.
+ *
+ * @generated from enum assembly.devint.v1.ElevationKind
+ */
+export enum ElevationKind {
+  /**
+   * @generated from enum value: ELEVATION_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * Place `staged_path` at `target`, owned by root.
+   *
+   * @generated from enum value: ELEVATION_KIND_INSTALL_FILE = 1;
+   */
+  INSTALL_FILE = 1,
+
+  /**
+   * Delete `target`.
+   *
+   * @generated from enum value: ELEVATION_KIND_DELETE_FILE = 2;
+   */
+  DELETE_FILE = 2,
+}
+
+/**
+ * Describes the enum assembly.devint.v1.ElevationKind.
+ */
+export const ElevationKindSchema: GenEnum<ElevationKind> = /*@__PURE__*/
+  enumDesc(file_devint, 3);
+
+/**
+ * @generated from enum assembly.devint.v1.ElevationPurpose
+ */
+export enum ElevationPurpose {
+  /**
+   * @generated from enum value: ELEVATION_PURPOSE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: ELEVATION_PURPOSE_PLACE_REVIEWED = 1;
+   */
+  PLACE_REVIEWED = 1,
+
+  /**
+   * @generated from enum value: ELEVATION_PURPOSE_RESTORE_BACKUP = 2;
+   */
+  RESTORE_BACKUP = 2,
+
+  /**
+   * @generated from enum value: ELEVATION_PURPOSE_REMOVE = 3;
+   */
+  REMOVE = 3,
+}
+
+/**
+ * Describes the enum assembly.devint.v1.ElevationPurpose.
+ */
+export const ElevationPurposeSchema: GenEnum<ElevationPurpose> = /*@__PURE__*/
+  enumDesc(file_devint, 4);
+
+/**
+ * Zero value fails closed: an unset outcome is never read as success.
+ *
+ * @generated from enum assembly.devint.v1.ElevationResultCode
+ */
+export enum ElevationResultCode {
+  /**
+   * @generated from enum value: ELEVATION_RESULT_CODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: ELEVATION_RESULT_CODE_COMPLETED = 1;
+   */
+  COMPLETED = 1,
+
+  /**
+   * @generated from enum value: ELEVATION_RESULT_CODE_DENIED = 2;
+   */
+  DENIED = 2,
+
+  /**
+   * @generated from enum value: ELEVATION_RESULT_CODE_CANCELLED = 3;
+   */
+  CANCELLED = 3,
+
+  /**
+   * @generated from enum value: ELEVATION_RESULT_CODE_UNAVAILABLE = 4;
+   */
+  UNAVAILABLE = 4,
+
+  /**
+   * @generated from enum value: ELEVATION_RESULT_CODE_NON_INTERACTIVE = 5;
+   */
+  NON_INTERACTIVE = 5,
+}
+
+/**
+ * Describes the enum assembly.devint.v1.ElevationResultCode.
+ */
+export const ElevationResultCodeSchema: GenEnum<ElevationResultCode> = /*@__PURE__*/
+  enumDesc(file_devint, 5);
+
+/**
  * Whether an apply modified anything (AAASM-5674).
  *
  * # Why this is an enum and not a `bool`
@@ -1959,5 +2179,5 @@ export enum ApplyMutation {
  * Describes the enum assembly.devint.v1.ApplyMutation.
  */
 export const ApplyMutationSchema: GenEnum<ApplyMutation> = /*@__PURE__*/
-  enumDesc(file_devint, 3);
+  enumDesc(file_devint, 6);
 

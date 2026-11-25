@@ -60,7 +60,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use aa_devtool_contract::{sha256_hex, AdapterError, ProtectionProfile};
+use aa_devtool_contract::{sha256_hex, AdapterError, ElevationPurpose, ProtectionProfile};
 
 /// The directory macOS reserves for Claude Code's endpoint-managed settings.
 ///
@@ -249,7 +249,7 @@ pub enum Authorization {
 
 impl Authorization {
     /// Turn a pre-flight reading into the refusal it implies, or `Ok(())`.
-    fn require(&self, path: &Path) -> Result<(), ManagedSettingsError> {
+    pub(crate) fn require(&self, path: &Path) -> Result<(), ManagedSettingsError> {
         match self {
             Self::Available => Ok(()),
             Self::NonInteractive { detail } => Err(ManagedSettingsError::NonInteractive { detail: detail.clone() }),
@@ -276,6 +276,18 @@ pub trait PrivilegedFileAuthority: fmt::Debug + Send + Sync {
     /// Place `staged` at `target`, owned by the administrator, replacing
     /// whatever is there atomically.
     fn install_file(&self, target: &Path, staged: &Path) -> Result<(), ManagedSettingsError>;
+
+    /// As [`install_file`](Self::install_file), stating *why* the placement is
+    /// requested so an authority that shows the operator what they are
+    /// authorizing can say so (AAASM-6491). The default ignores it.
+    fn install_file_for(
+        &self,
+        target: &Path,
+        staged: &Path,
+        _purpose: ElevationPurpose,
+    ) -> Result<(), ManagedSettingsError> {
+        self.install_file(target, staged)
+    }
 
     /// Delete `target`. Must succeed when `target` is already absent.
     fn delete_file(&self, target: &Path) -> Result<(), ManagedSettingsError>;
@@ -730,6 +742,16 @@ impl ManagedSettingsInstaller {
         self.work_dir.join(RECORD_FILE)
     }
 
+    /// Create the work directory owner-only.
+    ///
+    /// The staged file is the bytes a privileged placement will copy, so no other
+    /// account may be able to replace it between staging and placement. Mode
+    /// 0700 on the directory is what makes the staged file's own mode moot.
+    fn ensure_work_dir(&self) -> Result<(), ManagedSettingsError> {
+        std::fs::create_dir_all(&self.work_dir).map_err(|e| io_error(&self.work_dir, &e))?;
+        set_mode(&self.work_dir, 0o700)
+    }
+
     fn read_record(&self) -> Option<InstallRecord> {
         let raw = std::fs::read_to_string(self.record_path()).ok()?;
         serde_json::from_str(&raw).ok()
@@ -737,7 +759,7 @@ impl ManagedSettingsInstaller {
 
     fn write_record(&self, record: &InstallRecord) -> Result<(), ManagedSettingsError> {
         let path = self.record_path();
-        std::fs::create_dir_all(&self.work_dir).map_err(|e| io_error(&self.work_dir, &e))?;
+        self.ensure_work_dir()?;
         let body = serde_json::to_string_pretty(record).map_err(|e| ManagedSettingsError::Io {
             path: path.display().to_string(),
             detail: e.to_string(),
@@ -901,7 +923,10 @@ impl ManagedSettingsInstaller {
         // file it will never install.
         self.authority.availability().require(&self.target)?;
 
-        std::fs::create_dir_all(&self.work_dir).map_err(|e| io_error(&self.work_dir, &e))?;
+        self.ensure_work_dir()?;
+        // What the backup path held before this attempt touched it, so a refused
+        // authorization can put exactly that back (or remove what it created).
+        let prior_backup_bytes = std::fs::read(self.backup_path()).ok();
         let backup = match self.current()? {
             Some(prior) => {
                 let path = self.backup_path();
@@ -923,7 +948,26 @@ impl ManagedSettingsInstaller {
         std::fs::write(&staged, &disclosure.proposed).map_err(|e| io_error(&staged, &e))?;
         set_mode(&staged, 0o644)?;
 
-        self.authority.install_file(&self.target, &staged)?;
+        if let Err(refused) = self
+            .authority
+            .install_file_for(&self.target, &staged, ElevationPurpose::PlaceReviewed)
+        {
+            // Nothing was placed, so nothing this attempt created may outlive
+            // it: the staged copy and the backup taken moments ago. Leaving
+            // them behind on a denied or cancelled prompt made every refused
+            // install litter the state directory with a copy of the document.
+            // A backup an earlier install recorded is put back byte for byte.
+            let _ = std::fs::remove_file(&staged);
+            match prior_backup_bytes {
+                Some(bytes) => {
+                    let _ = std::fs::write(self.backup_path(), bytes);
+                }
+                None => {
+                    let _ = std::fs::remove_file(self.backup_path());
+                }
+            }
+            return Err(refused);
+        }
         let _ = std::fs::remove_file(&staged);
 
         match self.verify_read_back(&disclosure.proposed_sha256) {
@@ -947,7 +991,11 @@ impl ManagedSettingsInstaller {
                 let restore = match &backup {
                     Some(path) => std::fs::copy(path, &staged)
                         .ok()
-                        .and_then(|_| self.authority.install_file(&self.target, &staged).ok())
+                        .and_then(|_| {
+                            self.authority
+                                .install_file_for(&self.target, &staged, ElevationPurpose::RestoreBackup)
+                                .ok()
+                        })
                         .is_some(),
                     None => self.authority.delete_file(&self.target).is_ok(),
                 };
@@ -1064,11 +1112,14 @@ impl ManagedSettingsInstaller {
                 } else {
                     self.authority.availability().require(&self.target)?;
                     let staged = self.staged_path();
-                    std::fs::create_dir_all(&self.work_dir).map_err(|e| io_error(&self.work_dir, &e))?;
+                    self.ensure_work_dir()?;
                     std::fs::write(&staged, &prior).map_err(|e| io_error(&staged, &e))?;
                     set_mode(&staged, 0o644)?;
-                    self.authority.install_file(&self.target, &staged)?;
+                    let placed =
+                        self.authority
+                            .install_file_for(&self.target, &staged, ElevationPurpose::RestoreBackup);
                     let _ = std::fs::remove_file(&staged);
+                    placed?;
                     if self.current()?.as_deref() != Some(prior.as_str()) {
                         return Err(ManagedSettingsError::ReadBackMismatch {
                             path: self.target.display().to_string(),
@@ -1540,6 +1591,52 @@ mod tests {
             "root has no GUI session on a normal host — if this ever becomes \
              true, this check has stopped discriminating anything"
         );
+    }
+
+    #[test]
+    fn a_refused_authorization_leaves_no_staged_file_or_backup_behind() {
+        for authority in [FakeAuthority::denying(), FakeAuthority::unavailable()] {
+            let host = Host::new();
+            let installer = host.installer(authority);
+            let disclosure = installer.disclose(&document()).expect("disclosure");
+            let _ = installer.install(&disclosure);
+            let leftovers: Vec<_> = std::fs::read_dir(&host.work)
+                .expect("work dir")
+                .map(|e| e.expect("entry").file_name())
+                .collect();
+            assert!(leftovers.is_empty(), "a refused install left {leftovers:?} behind");
+            assert!(!host.target.exists(), "nothing may have been placed");
+        }
+    }
+
+    #[test]
+    fn a_denied_install_over_an_existing_record_keeps_the_record_and_removes_staging() {
+        let host = Host::new();
+        let first = host.installer(FakeAuthority::granting());
+        let d = first.disclose(&document()).expect("disclosure");
+        first.install(&d).expect("first install");
+        let changed = document().replace("\"default\"", "\"plan\"");
+        let second = host.installer(FakeAuthority::denying());
+        let d = second.disclose(&changed).expect("disclosure");
+        second.install(&d).expect_err("denied");
+        assert!(!host.work.join(STAGED_FILE).exists(), "staged copy must be removed");
+        assert!(host.work.join(RECORD_FILE).exists(), "the earlier record is untouched");
+        assert!(
+            !host.work.join(BACKUP_FILE).exists(),
+            "the attempt's own backup must be removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_work_directory_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let host = Host::new();
+        let installer = host.installer(FakeAuthority::granting());
+        let d = installer.disclose(&document()).expect("disclosure");
+        installer.install(&d).expect("install");
+        let mode = std::fs::metadata(&host.work).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 
     #[test]

@@ -46,6 +46,7 @@ use clap::Args;
 
 use crate::output::OutputFormat;
 
+use super::elevation::{self, AdminAuthArg, Elevator, Mode};
 use super::model::{RemoveReport, RuntimeInfo};
 use super::render::{emit, Report};
 use super::session::{Failure, SessionOptions};
@@ -103,6 +104,12 @@ pub struct RemoveArgs {
     /// anything the plan above did not name.
     #[arg(long)]
     pub force: bool,
+
+    /// How administrator authorization is obtained when the removal has to
+    /// delete or restore the managed-settings file: `terminal` (default;
+    /// `sudo` in this terminal) or `gui` (the macOS dialog).
+    #[arg(long, value_enum, default_value_t = AdminAuthArg::Terminal)]
+    pub admin_auth: AdminAuthArg,
 }
 
 /// Run `aasm integrations remove`.
@@ -159,9 +166,51 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
             return Ok(Outcome::Success);
         }
 
+        // Only a removal that has to touch the root-owned file asks for
+        // authorization, and the preview says how before anyone confirms.
+        // Whether this removal reaches the root-owned file is decided by *path*:
+        // a removal step carries no privilege marker, and its scope token or id
+        // say nothing a path does not say better.
+        let privileged = elevation::involves_managed_file(
+            preview
+                .steps
+                .iter()
+                .flat_map(|s| s.artifact_paths.iter().map(String::as_str)),
+        );
+        let human = if privileged {
+            format!(
+                "{}{}\n",
+                preview_report.render_human(),
+                args.admin_auth.disclosure_line()
+            )
+        } else {
+            preview_report.render_human()
+        };
         match output {
-            OutputFormat::Table => print!("{}", preview_report.render_human()),
-            _ => eprint!("{}", preview_report.render_human()),
+            OutputFormat::Table => print!("{human}"),
+            _ => eprint!("{human}"),
+        }
+        // Checked after the preview and before the question, and before anything
+        // is sent that could mutate: a removal that cannot be authorized should
+        // say so now, not after "y". A runtime too old to carry terminal
+        // authorization is refused here too, rather than left to open a dialog.
+        // A step that says it may touch the managed file (privilege, scope, or an
+        // action kind that is managed or unrecognised) is refused too against a
+        // runtime too old to carry terminal authorization, even when it names no
+        // path. Path-less steps of known unprivileged kinds are fine.
+        let undetermined = preview
+            .steps
+            .iter()
+            .any(|s| elevation::step_may_touch_managed(&s.action_kind, &s.privilege, &s.settings_scope));
+        if !args.dry_run {
+            elevation::refuse_terminal_below_v8(
+                args.admin_auth,
+                privileged || undetermined,
+                session.client.negotiated().di_api_version,
+            )?;
+        }
+        if privileged && !args.dry_run && matches!(args.admin_auth, AdminAuthArg::Terminal) {
+            elevation::preflight()?;
         }
 
         if !preview.residual.is_empty() && !args.force {
@@ -187,14 +236,37 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
         confirm(
             args.yes,
             output,
-            &format!("Remove the Agent Assembly integration from {}?", args.tool),
+            &if privileged {
+                format!(
+                    "Remove the Agent Assembly integration from {}, including the administrator-owned managed \
+                     settings file ({})?",
+                    args.tool,
+                    match args.admin_auth {
+                        AdminAuthArg::Terminal => "sudo in this terminal",
+                        AdminAuthArg::Gui => "macOS dialog",
+                    }
+                )
+            } else {
+                format!("Remove the Agent Assembly integration from {}?", args.tool)
+            },
         )?;
 
+        let record = elevation::new_record();
+        let version = session.client.negotiated().di_api_version;
+        let method = elevation::method_to_send(args.admin_auth, privileged, version);
+        if !method.is_empty() && matches!(args.admin_auth, AdminAuthArg::Terminal) {
+            session.client.set_elevation_handler(
+                Elevator::new(Mode::Remove, None, record.clone())
+                    .assuming_yes(args.yes)
+                    .into_handler(),
+            );
+        }
+        let target = target.with_authorization_method(method);
         let removed = session
             .client
             .remove(&args.tool, &preview.plan_id, target.as_request())
             .await
-            .map_err(verb_failure)?;
+            .map_err(|e| elevation::failure_after(verb_failure(e), &record))?;
         emit(&RemoveReport::from_view(runtime, &removed, false, args.yes), output);
         Ok(Outcome::Success)
     })

@@ -12,12 +12,14 @@
 //! Inbound tags (client → runtime):
 //!   1 = Hello
 //!   2 = Request
+//!   3 = ElevationResult (DI-API 8; only valid while a request is in flight)
 //!
 //! Outbound tags (runtime → client):
 //!   1 = HelloAck
 //!   2 = Incompatible
 //!   3 = Response
 //!   4 = Denied
+//!   5 = ElevationRequest (DI-API 8; only on a connection that negotiated v8+)
 
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,6 +30,8 @@ use aa_proto::assembly::devint::v1 as wire;
 pub const TAG_HELLO: u8 = 1;
 /// Client → runtime: a verb invocation.
 pub const TAG_REQUEST: u8 = 2;
+/// Client → runtime: the answer to an [`TAG_ELEVATION_REQUEST`] (AAASM-6491).
+pub const TAG_ELEVATION_RESULT: u8 = 3;
 
 /// Runtime → client: negotiation succeeded (supported or degraded).
 pub const TAG_HELLO_ACK: u8 = 1;
@@ -37,6 +41,9 @@ pub const TAG_INCOMPATIBLE: u8 = 2;
 pub const TAG_RESPONSE: u8 = 3;
 /// Runtime → client: the request was refused.
 pub const TAG_DENIED: u8 = 4;
+/// Runtime → client: ask the client to run one elevated operation in its own
+/// terminal while a request is in flight (AAASM-6491, DI-API 8).
+pub const TAG_ELEVATION_REQUEST: u8 = 5;
 
 /// Maximum accepted length-delimited payload, in bytes (1 MiB).
 ///
@@ -59,6 +66,8 @@ pub enum DiFrame {
     Hello(wire::Hello),
     /// A verb invocation.
     Request(Box<wire::Request>),
+    /// The client's answer to an elevation request.
+    ElevationResult(wire::ElevationResult),
 }
 
 /// A runtime → client frame.
@@ -72,6 +81,8 @@ pub enum DiResponseFrame {
     Response(Box<wire::Response>),
     /// A refusal.
     Denied(wire::Denied),
+    /// A request to run one elevated operation in the client's terminal.
+    ElevationRequest(wire::ElevationRequest),
 }
 
 /// Errors from framing a DI-API message.
@@ -133,6 +144,7 @@ where
     match tag {
         TAG_HELLO => Ok(DiFrame::Hello(wire::Hello::decode(bytes.as_ref())?)),
         TAG_REQUEST => Ok(DiFrame::Request(Box::new(wire::Request::decode(bytes.as_ref())?))),
+        TAG_ELEVATION_RESULT => Ok(DiFrame::ElevationResult(wire::ElevationResult::decode(bytes.as_ref())?)),
         other => Err(DiCodecError::UnknownTag(other)),
     }
 }
@@ -147,6 +159,7 @@ where
         DiResponseFrame::Incompatible(m) => (TAG_INCOMPATIBLE, m.encode_to_vec()),
         DiResponseFrame::Response(m) => (TAG_RESPONSE, m.encode_to_vec()),
         DiResponseFrame::Denied(m) => (TAG_DENIED, m.encode_to_vec()),
+        DiResponseFrame::ElevationRequest(m) => (TAG_ELEVATION_REQUEST, m.encode_to_vec()),
     };
     let mut out = Vec::with_capacity(1 + 10 + body.len());
     out.push(tag);
@@ -166,6 +179,7 @@ where
     let (tag, body) = match frame {
         DiFrame::Hello(m) => (TAG_HELLO, m.encode_to_vec()),
         DiFrame::Request(m) => (TAG_REQUEST, m.encode_to_vec()),
+        DiFrame::ElevationResult(m) => (TAG_ELEVATION_RESULT, m.encode_to_vec()),
     };
     let mut out = Vec::with_capacity(1 + 10 + body.len());
     out.push(tag);
@@ -192,6 +206,9 @@ where
             bytes.as_ref(),
         )?))),
         TAG_DENIED => Ok(DiResponseFrame::Denied(wire::Denied::decode(bytes.as_ref())?)),
+        TAG_ELEVATION_REQUEST => Ok(DiResponseFrame::ElevationRequest(wire::ElevationRequest::decode(
+            bytes.as_ref(),
+        )?)),
         other => Err(DiCodecError::UnknownTag(other)),
     }
 }
@@ -296,6 +313,15 @@ mod tests {
                 code: wire::DenyCode::Unauthenticated as i32,
                 ..Default::default()
             }),
+            DiResponseFrame::ElevationRequest(wire::ElevationRequest {
+                request_id: 9,
+                sequence: 1,
+                kind: wire::ElevationKind::InstallFile as i32,
+                purpose: wire::ElevationPurpose::PlaceReviewed as i32,
+                target: "/t".to_string(),
+                staged_path: "/s".to_string(),
+                staged_sha256: "ab".repeat(32),
+            }),
         ];
         for frame in frames {
             let expected_tag = match &frame {
@@ -303,6 +329,7 @@ mod tests {
                 DiResponseFrame::Incompatible(_) => TAG_INCOMPATIBLE,
                 DiResponseFrame::Response(_) => TAG_RESPONSE,
                 DiResponseFrame::Denied(_) => TAG_DENIED,
+                DiResponseFrame::ElevationRequest(_) => TAG_ELEVATION_REQUEST,
             };
             let mut buf = Vec::new();
             write_frame(&mut buf, frame).await.unwrap();
@@ -310,6 +337,31 @@ mod tests {
             let mut cursor = std::io::Cursor::new(buf);
             read_response_frame(&mut cursor).await.expect("decodes");
         }
+    }
+
+    #[tokio::test]
+    async fn an_elevation_result_round_trips_and_unset_outcome_is_zero() {
+        let result = wire::ElevationResult {
+            request_id: 9,
+            sequence: 1,
+            outcome: wire::ElevationResultCode::Completed as i32,
+            detail: "ok".to_string(),
+        };
+        let mut buf = Vec::new();
+        write_client_frame(&mut buf, DiFrame::ElevationResult(result.clone()))
+            .await
+            .unwrap();
+        assert_eq!(buf[0], TAG_ELEVATION_RESULT);
+        let mut cursor = std::io::Cursor::new(buf);
+        match read_frame(&mut cursor).await.unwrap() {
+            DiFrame::ElevationResult(decoded) => assert_eq!(decoded, result),
+            other => panic!("expected ElevationResult, got {other:?}"),
+        }
+        // The zero value is the fail-closed one.
+        assert_eq!(
+            wire::ElevationResult::default().outcome,
+            wire::ElevationResultCode::Unspecified as i32
+        );
     }
 
     #[tokio::test]

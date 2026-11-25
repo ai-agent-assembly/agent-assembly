@@ -44,7 +44,9 @@ use std::process::Output;
 use std::sync::Arc;
 
 use aa_core::integration::ReceiptStore;
-use aa_runtime::devint::adapters::claude_code_integration;
+use aa_devtool_claude_code::managed_settings::testing::FakeAuthority;
+use aa_devtool_claude_code::ClaudeCodeIntegration;
+use aa_runtime::devint::adapters::claude_code_registration;
 use aa_runtime::devint::{DevIntServer, DevIntServerConfig, DevIntServices, EngineLifecycle, TokenStore};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -82,6 +84,14 @@ fn require_claude(scenario: &str) -> bool {
     found
 }
 
+/// The native Claude Code registration, with `recording` in the GUI authority
+/// slot (AAASM-6491).
+fn registration(recording: &Arc<FakeAuthority>) -> aa_runtime::devint::RegisteredIntegration {
+    claude_code_registration(Arc::new(
+        ClaudeCodeIntegration::new().with_managed_authority(recording.clone()),
+    ))
+}
+
 struct Harness {
     // Held for the whole struct lifetime, not just construction — see the
     // module doc's Safety section (AAASM-5989). Field order doesn't matter for
@@ -96,11 +106,23 @@ struct Harness {
     token_file: std::path::PathBuf,
     shutdown: CancellationToken,
     server: Option<std::thread::JoinHandle<()>>,
+    /// The GUI-slot authority the runtime's integration was registered with
+    /// (AAASM-6491). It records every call and never elevates, so a test can
+    /// prove the default flow did not reach it: terminal authorization goes
+    /// through the CLI's `sudo` instead.
+    recording: Arc<FakeAuthority>,
 }
 
 impl Harness {
     fn start() -> Self {
         let _env_guard = aa_cli::env_guard::lock();
+        // The elevation seam is for the stub these tests install per command. An
+        // ambient one would silently redirect every run, so it is a failure, not
+        // a reason to skip.
+        assert!(
+            std::env::var_os("AASM_TEST_ELEVATION_HELPER").is_none(),
+            "AASM_TEST_ELEVATION_HELPER must not be set in the environment these tests run in"
+        );
         let dir = tempfile::tempdir().expect("tempdir");
         let run = dir.path().join("run");
         let claude_home = dir.path().join(".claude");
@@ -135,8 +157,9 @@ impl Harness {
         // the write unprivileged, and keeps the smoke run off the real path.
         std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path().join("ClaudeCode"));
 
+        let recording = FakeAuthority::granting();
         let lifecycle = Arc::new(EngineLifecycle::new(
-            vec![claude_code_integration()],
+            vec![registration(&recording)],
             ReceiptStore::at(dir.path().join("state").join("integrations")),
         ));
 
@@ -177,6 +200,7 @@ impl Harness {
             token_file,
             shutdown,
             server: Some(handle),
+            recording,
         }
     }
 
@@ -203,7 +227,7 @@ impl Harness {
         let prior = std::env::current_dir().expect("cwd");
         std::env::set_current_dir(boot_cwd).expect("chdir to the new boot directory");
         let lifecycle = Arc::new(EngineLifecycle::new(
-            vec![claude_code_integration()],
+            vec![registration(&self.recording)],
             ReceiptStore::at(self.dir.path().join("state").join("integrations")),
         ));
         std::env::set_current_dir(prior).expect("restore cwd");
@@ -1202,4 +1226,673 @@ fn interleaved_callers_each_get_their_own_project_and_no_stale_one() {
         None,
         "the removal wrote the service's project"
     );
+}
+
+// ── Terminal-first administrator authorization (AAASM-6491) ─────────────────
+//
+// The CLI owns the operator's terminal and runs `sudo` there; the runtime only
+// asks. These tests drive the compiled `aasm` against the real DI-API server,
+// with the controlling terminal either a real pseudo-terminal or absent, and
+// `sudo` replaced by a recording stub through the seam the CLI honours *only*
+// when the runtime-sent target is not the canonical managed-settings path.
+//
+// Nothing here can reach the real `/Library` path or a real password prompt:
+// the managed root is redirected into the temp directory, so the CLI would
+// refuse to elevate for it without the stub, and the stub only copies files.
+
+/// What the operator "types" into the pty. Asserted absent from everything the
+/// product can write or print.
+const PASSWORD: &str = "hunter2-aaasm6491";
+
+impl Harness {
+    fn managed_target(&self) -> std::path::PathBuf {
+        self.dir.path().join("ClaudeCode").join("managed-settings.json")
+    }
+
+    fn managed_work_dir(&self) -> std::path::PathBuf {
+        self.dir
+            .path()
+            .join("state")
+            .join("integrations")
+            .join("claude-code")
+            .join("managed")
+    }
+
+    fn stub_record(&self) -> std::path::PathBuf {
+        self.dir.path().join("sudo-stub.record")
+    }
+
+    /// A stand-in for `sudo`: records every argument and its whole environment,
+    /// reads one line from `/dev/tty` for `-v`, accepts only [`PASSWORD`], and
+    /// performs `install` / `rm` as an ordinary copy without `-o`/`-g`.
+    fn write_sudo_stub(&self) -> std::path::PathBuf {
+        let path = self.dir.path().join("sudo-stub.sh");
+        let script = format!(
+            r#"#!/bin/sh
+REC='{rec}'
+{{
+  for a in "$@"; do printf 'ARG:%s\n' "$a"; done
+  echo ENV_BEGIN; env; echo ENV_END
+  echo CALL_END
+}} >> "$REC"
+case "$1" in
+  -v)
+    IFS= read -r pw < /dev/tty || exit 1
+    [ "$pw" = '{password}' ] || {{ echo "sudo: Sorry, try again." >&2; exit 1; }}
+    exit 0 ;;
+  -k) exit 0 ;;
+esac
+shift
+[ "$1" = "--" ] && shift
+cmd=$1; shift
+last=; penult=
+for a in "$@"; do penult=$last; last=$a; done
+case "$cmd" in
+  /usr/bin/tee) mkdir -p "$(dirname "$last")" 2>/dev/null; cat > "$last"; exit $? ;;
+  /bin/rmdir) rmdir "$last"; exit $? ;;
+  /usr/bin/install)
+    if [ "$1" = "-d" ]; then mkdir -p "$last"; exit 0; fi
+    mkdir -p "$(dirname "$last")" && cp "$penult" "$last" && chmod 644 "$last"; exit $? ;;
+  /bin/rm) rm -f "$last"; exit $? ;;
+esac
+exit 1
+"#,
+            rec = self.stub_record().display(),
+            password = PASSWORD
+        );
+        std::fs::write(&path, script).expect("write stub");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+        path
+    }
+
+    /// Every `sudo` invocation the stub saw, as argument lists.
+    fn stub_calls(&self) -> Vec<Vec<String>> {
+        let raw = std::fs::read_to_string(self.stub_record()).unwrap_or_default();
+        let mut calls = Vec::new();
+        let mut current: Vec<String> = Vec::new();
+        let mut in_env = false;
+        for line in raw.lines() {
+            match line {
+                "ENV_BEGIN" => in_env = true,
+                "ENV_END" => in_env = false,
+                "CALL_END" => calls.push(std::mem::take(&mut current)),
+                _ if in_env => {}
+                _ => {
+                    if let Some(arg) = line.strip_prefix("ARG:") {
+                        current.push(arg.to_string());
+                    }
+                }
+            }
+        }
+        calls
+    }
+
+    /// The environment variable names the stub observed across all calls.
+    fn stub_env_names(&self) -> std::collections::BTreeSet<String> {
+        let raw = std::fs::read_to_string(self.stub_record()).unwrap_or_default();
+        let mut names = std::collections::BTreeSet::new();
+        let mut in_env = false;
+        for line in raw.lines() {
+            match line {
+                "ENV_BEGIN" => in_env = true,
+                "ENV_END" => in_env = false,
+                _ if in_env => {
+                    if let Some((name, _)) = line.split_once('=') {
+                        names.insert(name.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// Run `aasm integrations <args>` with the stub standing in for `sudo`.
+    ///
+    /// `tty`: `Some(answers)` gives the child a real pseudo-terminal as its
+    /// controlling terminal and types `answers` into it once `sudo` is waiting;
+    /// `None` gives it no controlling terminal at all (`setsid`, nothing
+    /// attached), which is what a cron job or a detached session looks like.
+    fn aasm_with_stub(&self, args: &[&str], tty: Option<&str>) -> std::process::Output {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+
+        let stub = self.write_sudo_stub();
+        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("aasm"));
+        cmd.arg("integrations")
+            .args(args)
+            .arg("--no-autostart")
+            .env("AA_DEVINT_SOCKET", &self.socket)
+            .env("AA_DEVINT_TOKEN_FILE", &self.token_file)
+            .env("AASM_STATE_DIR", self.dir.path().join("state"))
+            .env("HOME", self.dir.path())
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join(".claude"))
+            .env("AA_CA_DIR", self.dir.path().join("aa").join("ca"))
+            .env("AASM_API_KEY", "")
+            .env("AASM_CLAUDE_MANAGED_ROOT", self.dir.path().join("ClaudeCode"))
+            .env("AASM_TEST_ELEVATION_HELPER", &stub)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut pty_master = None;
+        if tty.is_some() {
+            // `posix_openpt` rather than `openpty`: the latter needs `-lutil` on
+            // older glibc, and this file is compiled on Linux CI even though
+            // every test in it declines there.
+            // SAFETY: each call is checked, and the descriptors are wrapped in
+            // `OwnedFd` immediately so they close on drop.
+            let (master, slave) = unsafe {
+                let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+                assert!(master >= 0, "posix_openpt failed");
+                let master = OwnedFd::from_raw_fd(master);
+                assert_eq!(libc::grantpt(master.as_raw_fd()), 0, "grantpt failed");
+                assert_eq!(libc::unlockpt(master.as_raw_fd()), 0, "unlockpt failed");
+                let name = libc::ptsname(master.as_raw_fd());
+                assert!(!name.is_null(), "ptsname failed");
+                let slave = libc::open(name, libc::O_RDWR | libc::O_NOCTTY);
+                assert!(slave >= 0, "opening the pty slave failed");
+                (master, OwnedFd::from_raw_fd(slave))
+            };
+            let slave_fd = slave.as_raw_fd();
+            // SAFETY: runs between fork and exec; only async-signal-safe calls.
+            unsafe {
+                cmd.pre_exec(move || {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = cmd.spawn().expect("spawn aasm");
+            drop(slave);
+            pty_master = Some((master, child));
+        } else {
+            // SAFETY: `setsid` is async-signal-safe; it detaches the child from
+            // this process's controlling terminal.
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let (child, typist) = match pty_master {
+            Some((master, child)) => {
+                let record = self.stub_record();
+                let answer = format!("{}\n", tty.expect("tty answers"));
+                let typist = std::thread::spawn(move || {
+                    use std::io::Write;
+                    let mut master = std::fs::File::from(master);
+                    // Type only once `sudo -v` is waiting, so the line is not
+                    // consumed by something earlier. Bounded: no answer is
+                    // typed if the stub is never reached.
+                    for _ in 0..400 {
+                        let seen = std::fs::read_to_string(&record).unwrap_or_default();
+                        if seen.contains("ARG:-v") {
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            let _ = master.write_all(answer.as_bytes());
+                            let _ = master.flush();
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    // Keep the master open until the child is done with it.
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    drop(master);
+                });
+                (child, Some(typist))
+            }
+            None => (cmd.spawn().expect("spawn aasm"), None),
+        };
+        let pid = child.id();
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watchdog_flag = finished.clone();
+        let watchdog = std::thread::spawn(move || {
+            for _ in 0..1200 {
+                if watchdog_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            // SAFETY: `pid` is this test's own child; a hang is killed, never
+            // left to block the suite.
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        });
+        let output = child.wait_with_output().expect("wait for aasm");
+        finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = watchdog.join();
+        if let Some(typist) = typist {
+            let _ = typist.join();
+        }
+        output
+    }
+
+    /// Everything under the harness directory, concatenated, for secret scans.
+    fn everything_on_disk(&self) -> String {
+        fn walk(dir: &std::path::Path, out: &mut String) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.file_name().is_some_and(|n| n == "sudo-stub.sh") {
+                    // The stand-in for sudo's own password check holds the password
+                    // by construction; it is the test's verifier, not product output.
+                } else if let Ok(text) = std::fs::read_to_string(&path) {
+                    out.push_str(&text);
+                }
+            }
+        }
+        let mut out = String::new();
+        walk(self.dir.path(), &mut out);
+        out
+    }
+
+    fn assert_no_remnants(&self) {
+        assert!(!self.managed_target().exists(), "the managed file must not exist");
+        let leftovers: Vec<_> = std::fs::read_dir(self.managed_work_dir())
+            .map(|d| d.flatten().map(|e| e.file_name()).collect())
+            .unwrap_or_default();
+        let leftovers: Vec<_> = leftovers
+            .into_iter()
+            .filter(|n: &std::ffi::OsString| {
+                let n = n.to_string_lossy();
+                n.contains("staged") || n.contains("backup")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "staging or backup left behind: {leftovers:?}");
+    }
+}
+
+/// The exact argument lists the CLI hands `sudo` for one install, against the
+/// redirected target the stub is allowed to act on.
+#[test]
+fn terminal_authorization_installs_through_one_sudo_call_and_never_the_dialog() {
+    let scenario = "terminal_authorization_installs_through_one_sudo_call_and_never_the_dialog";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let out = h.aasm_with_stub(
+        &["install", "claude-code", "--install-managed-settings", "--yes"],
+        Some(PASSWORD),
+    );
+    let message = format!("{}{}", stdout(&out), stderr(&out));
+    println!("--- terminal install ---\n{message}");
+    assert!(out.status.success(), "{message}");
+
+    let target = h.managed_target();
+    assert!(target.exists(), "the stub placed the managed file");
+    assert!(message.contains("authorization: sudo in this terminal"), "{message}");
+    let placed = std::fs::read_to_string(&target).expect("read the placed file");
+    assert!(
+        placed.contains("disableBypassPermissionsMode"),
+        "the placed document is the reviewed one: {placed}"
+    );
+
+    let calls = h.stub_calls();
+    let target_str = target.display().to_string();
+    let dir_str = target.parent().expect("parent").display().to_string();
+    // The temporary is unique per run, with a fixed prefix, inside the managed directory.
+    let tmp_str = calls[2][4].clone();
+    assert!(
+        tmp_str.starts_with(&format!("{dir_str}/.managed-settings.json.aasm-new.")),
+        "{calls:?}"
+    );
+    assert_eq!(
+        calls.len(),
+        6,
+        "authenticate, mkdir, tee, install, rm tmp, drop: {calls:?}"
+    );
+    assert_eq!(&calls[0][..2], ["-v", "-p"], "{calls:?}");
+    assert!(
+        calls[0][2].starts_with("[aasm] password for %u to place one root-owned file, "),
+        "{calls:?}"
+    );
+    assert!(!calls.iter().flatten().any(|a| a == "-S" || a == "-A"), "{calls:?}");
+    assert_eq!(
+        calls[1],
+        [
+            "-n",
+            "--",
+            "/usr/bin/install",
+            "-d",
+            "-m",
+            "755",
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            "--",
+            dir_str.as_str()
+        ]
+    );
+    // Root is handed the verified bytes on stdin and a root-owned temporary: no
+    // argv run as root ever names the user-writable staged file.
+    assert_eq!(calls[2], ["-n", "--", "/usr/bin/tee", "--", tmp_str.as_str()]);
+    assert_eq!(
+        calls[3],
+        [
+            "-n",
+            "--",
+            "/usr/bin/install",
+            "-m",
+            "644",
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            "--",
+            tmp_str.as_str(),
+            target_str.as_str()
+        ]
+    );
+    assert_eq!(calls[4], ["-n", "--", "/bin/rm", "-f", "--", tmp_str.as_str()]);
+    assert_eq!(calls[5], ["-k"]);
+    assert!(
+        !calls.iter().flatten().any(|a| a.contains("staged")),
+        "a staged path reached the root side: {calls:?}"
+    );
+
+    assert_eq!(
+        h.recording.calls().len(),
+        0,
+        "the GUI authority must not be reached by the default flow: {:?}",
+        h.recording.calls()
+    );
+
+    // Only what the CLI chose crossed into sudo's environment.
+    let names = h.stub_env_names();
+    for forbidden in [
+        "AASM_STATE_DIR",
+        "AASM_API_KEY",
+        "HOME",
+        "CLAUDE_CONFIG_DIR",
+        "AASM_TEST_ELEVATION_HELPER",
+    ] {
+        assert!(!names.contains(forbidden), "{forbidden} leaked into sudo: {names:?}");
+    }
+    assert!(names.contains("PATH"), "{names:?}");
+
+    // The typed password is nowhere the product could have put it.
+    let stub_record = std::fs::read_to_string(h.stub_record()).unwrap_or_default();
+    assert!(!stub_record.contains(PASSWORD), "password in argv or env");
+    assert!(!message.contains(PASSWORD), "password in output");
+    assert!(!h.everything_on_disk().contains(PASSWORD), "password on disk");
+
+    // And removal goes the same way and ends with the target absent.
+    let removal = h.aasm_with_stub(&["remove", "claude-code", "--yes"], Some(PASSWORD));
+    let message = format!("{}{}", stdout(&removal), stderr(&removal));
+    println!("--- terminal remove ---\n{message}");
+    assert!(removal.status.success(), "{message}");
+    assert!(!target.exists(), "removal must leave the target absent");
+    let calls = h.stub_calls();
+    let removal_calls = &calls[6..];
+    assert_eq!(removal_calls.len(), 3, "authenticate, rm, drop: {removal_calls:?}");
+    assert!(
+        removal_calls[0][2].contains("to delete one root-owned file"),
+        "{removal_calls:?}"
+    );
+    assert_eq!(
+        removal_calls[1],
+        ["-n", "--", "/bin/rm", "-f", "--", target_str.as_str()]
+    );
+    assert_eq!(removal_calls[2], ["-k"]);
+    assert_eq!(h.recording.calls().len(), 0);
+}
+
+/// No controlling terminal: exit 9 promptly, neither the stub nor the GUI
+/// authority is reached, and nothing is left behind.
+#[test]
+fn without_a_terminal_the_install_exits_promptly_and_changes_nothing() {
+    let scenario = "without_a_terminal_the_install_exits_promptly_and_changes_nothing";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let started = std::time::Instant::now();
+    let out = h.aasm_with_stub(&["install", "claude-code", "--install-managed-settings", "--yes"], None);
+    let message = format!("{}{}", stdout(&out), stderr(&out));
+    println!("--- no tty ---\n{message}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(30), "must not wait");
+    assert_eq!(out.status.code(), Some(9), "{message}");
+    assert!(message.contains("Unavailable"), "{message}");
+    assert!(message.contains("needs an interactive terminal"), "{message}");
+    assert!(
+        message.contains("--admin-auth gui"),
+        "the remediation must be actionable: {message}"
+    );
+    assert!(h.stub_calls().is_empty(), "sudo must not be reached without a tty");
+    assert!(h.recording.calls().is_empty(), "the dialog must not be reached either");
+    h.assert_no_remnants();
+}
+
+/// A refused password: exit 9, "Permission Required", and the install is
+/// rolled back — no target, no staged file, no backup, no receipt.
+#[test]
+fn a_refused_password_is_permission_required_and_leaves_no_remnants() {
+    let scenario = "a_refused_password_is_permission_required_and_leaves_no_remnants";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let out = h.aasm_with_stub(
+        &["install", "claude-code", "--install-managed-settings", "--yes"],
+        Some("not-the-password"),
+    );
+    let message = format!("{}{}", stdout(&out), stderr(&out));
+    println!("--- denied ---\n{message}");
+    assert_eq!(out.status.code(), Some(9), "{message}");
+    assert!(message.contains("Permission Required"), "{message}");
+    assert!(message.contains("nothing was changed"), "{message}");
+    assert!(h.recording.calls().is_empty());
+    h.assert_no_remnants();
+
+    let status = h.aasm(&["status", "claude-code", "--output", "json"]);
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).expect("status json");
+    let phase = status["phase"].as_str().unwrap_or_default();
+    assert!(
+        phase != "installed" && phase != "partially_installed",
+        "the rest of the install must have been rolled back, phase was {phase}"
+    );
+    assert!(h.aasm(&["status", "claude-code"]).status.code().is_some());
+}
+
+/// `--admin-auth gui` is the only way to the dialog path: the recording
+/// authority is reached, and the stub never is.
+#[test]
+fn gui_authorization_is_reached_only_when_asked_for_by_name() {
+    let scenario = "gui_authorization_is_reached_only_when_asked_for_by_name";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let out = h.aasm_with_stub(
+        &[
+            "install",
+            "claude-code",
+            "--install-managed-settings",
+            "--admin-auth",
+            "gui",
+            "--yes",
+        ],
+        None,
+    );
+    let message = format!("{}{}", stdout(&out), stderr(&out));
+    println!("--- gui ---\n{message}");
+    assert!(out.status.success(), "{message}");
+    assert!(
+        message.contains("authorization: macOS dialog (--admin-auth gui)"),
+        "{message}"
+    );
+    assert!(!h.recording.calls().is_empty(), "the GUI authority was never reached");
+    assert!(
+        h.stub_calls().is_empty(),
+        "terminal authorization must not run under gui"
+    );
+}
+
+/// Planning and the default flow never reach the dialog authority.
+#[test]
+fn planning_and_the_default_flow_never_reach_the_dialog_authority() {
+    let scenario = "planning_and_the_default_flow_never_reach_the_dialog_authority";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let plan = h.aasm(&["plan", "claude-code", "--install-managed-settings"]);
+    let rendered = format!("{}{}", stdout(&plan), stderr(&plan));
+    assert!(plan.status.success(), "{rendered}");
+    assert!(rendered.contains("authorization: sudo in this terminal"), "{rendered}");
+    assert!(
+        rendered.contains("sudo in the terminal that ran this command"),
+        "the mechanism line must be in the disclosure: {rendered}"
+    );
+    assert_eq!(h.recording.calls().len(), 0, "planning must not elevate");
+}
+
+#[test]
+fn the_cli_owns_copies_of_the_managed_identifiers_that_equal_the_adapters() {
+    // The published CLI cannot import these from the held-back adapter, so it
+    // keeps its own; this test (stripped with the adapter) keeps them honest.
+    use aa_cli::commands::integrations::elevation as cli;
+    assert_eq!(
+        cli::MANAGED_SETTINGS_PATH,
+        aa_devtool_claude_code::MANAGED_SETTINGS_PATH
+    );
+    assert_eq!(
+        cli::MANAGED_SETTINGS_FILE,
+        aa_devtool_claude_code::managed_settings::MANAGED_SETTINGS_FILE
+    );
+    assert_eq!(
+        cli::STEP_ENDPOINT_MANAGED_SETTINGS,
+        aa_devtool_claude_code::lifecycle::STEP_ENDPOINT_MANAGED_SETTINGS
+    );
+}
+
+/// `osascript` has exactly one home: the GUI authority. If another source file
+/// grows a reference, a code path outside the explicit `--admin-auth gui`
+/// choice may have learned to raise the dialog.
+#[test]
+fn osascript_appears_only_in_the_gui_authority() {
+    fn scan(dir: &std::path::Path, hits: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan(&path, hits);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if text.contains("osascript") {
+                        hits.push(path.display().to_string());
+                    }
+                }
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut hits = Vec::new();
+    for krate in [
+        "aa-cli",
+        "aa-runtime",
+        "aa-core",
+        "aa-devtool-claude-code",
+        "aa-devtool-contract",
+    ] {
+        scan(&root.join(krate).join("src"), &mut hits);
+    }
+    assert!(
+        hits.len() == 1 && hits[0].ends_with("aa-devtool-claude-code/src/managed_settings.rs"),
+        "osascript must live only in MacOsAdminAuthority, found: {hits:?}"
+    );
+}
+
+/// With no terminal, `remove` and `repair` exit 9 before anything is sent that
+/// could change the host, and `remove` has already shown how it would have
+/// asked.
+#[test]
+fn remove_and_repair_without_a_terminal_exit_before_any_mutation() {
+    let scenario = "remove_and_repair_without_a_terminal_exit_before_any_mutation";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let install = h.aasm_with_stub(
+        &["install", "claude-code", "--install-managed-settings", "--yes"],
+        Some(PASSWORD),
+    );
+    assert!(install.status.success(), "{}{}", stdout(&install), stderr(&install));
+    let before = h.stub_calls().len();
+    let target = h.managed_target();
+    assert!(target.exists());
+
+    let removal = h.aasm_with_stub(&["remove", "claude-code", "--yes"], None);
+    let message = format!("{}{}", stdout(&removal), stderr(&removal));
+    println!("--- remove, no tty ---\n{message}");
+    assert_eq!(removal.status.code(), Some(9), "{message}");
+    assert!(
+        message.contains("authorization: sudo in this terminal"),
+        "disclosed first: {message}"
+    );
+    assert!(message.contains("needs an interactive terminal"), "{message}");
+    assert!(target.exists(), "nothing may be removed");
+    assert_eq!(h.stub_calls().len(), before, "sudo must not be reached");
+
+    // Repair: take the managed file away so there is drift on exactly that path.
+    std::fs::remove_file(&target).expect("drift the managed file");
+    let repair = h.aasm_with_stub(&["repair", "claude-code", "--yes"], None);
+    let message = format!("{}{}", stdout(&repair), stderr(&repair));
+    println!("--- repair, no tty ---\n{message}");
+    assert_eq!(repair.status.code(), Some(9), "{message}");
+    assert!(message.contains("authorization: sudo in this terminal"), "{message}");
+    assert!(!target.exists(), "nothing may be re-placed without authorization");
+    assert_eq!(h.stub_calls().len(), before, "sudo must not be reached");
+    assert!(h.recording.calls().is_empty(), "the dialog must not be reached either");
+}
+
+/// The removal preview names how authorization will be obtained *before* the
+/// confirmation, and declining to confirm changes nothing.
+#[test]
+fn the_removal_preview_names_the_method_before_it_asks_for_confirmation() {
+    let scenario = "the_removal_preview_names_the_method_before_it_asks_for_confirmation";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let install = h.aasm_with_stub(
+        &["install", "claude-code", "--install-managed-settings", "--yes"],
+        Some(PASSWORD),
+    );
+    assert!(install.status.success(), "{}{}", stdout(&install), stderr(&install));
+    let before = h.stub_calls().len();
+
+    // A terminal exists but stdin is not one and `--yes` is absent: the command
+    // cannot ask, so it refuses — after printing the preview.
+    let removal = h.aasm_with_stub(&["remove", "claude-code"], Some(PASSWORD));
+    let message = format!("{}{}", stdout(&removal), stderr(&removal));
+    println!("--- remove, no --yes ---\n{message}");
+    assert_eq!(removal.status.code(), Some(9), "{message}");
+    let disclosed = message
+        .find("authorization: sudo in this terminal")
+        .expect("disclosure line");
+    let refused = message.find("nothing was changed").expect("refusal");
+    assert!(
+        disclosed < refused,
+        "the method must be named before the refusal to proceed: {message}"
+    );
+    assert!(h.managed_target().exists());
+    assert_eq!(h.stub_calls().len(), before);
 }

@@ -54,10 +54,10 @@ use tokio::sync::Mutex;
 use aa_core::dev_tool::{DevToolKind, GovernanceLevel};
 use aa_core::integration::policy_posture::PolicyPosture;
 use aa_core::integration::{
-    now_unix_secs, ApplyContext, DevToolIntegration, DriftKind, DriftReport, EngineError, FilesystemExecutor,
-    IntegrationCapability, IntegrationEngine, IntegrationPlan, IntegrationReceipt, IntegrationRequest,
-    IntegrationStatus, ProtectionLevel, ProtectionState, ReceiptStore, RemovalPlan, SettingsScope, StepExecutor,
-    VerificationOutcome, VerificationResult, VersionCompatibility, DEFAULT_FRESHNESS_WINDOW_SECS,
+    now_unix_secs, ApplyContext, AuthorizationMethod, DevToolIntegration, DriftKind, DriftReport, ElevationContext,
+    EngineError, FilesystemExecutor, IntegrationCapability, IntegrationEngine, IntegrationPlan, IntegrationReceipt,
+    IntegrationRequest, IntegrationStatus, ProtectionLevel, ProtectionState, ReceiptStore, RemovalPlan, SettingsScope,
+    StepExecutor, VerificationOutcome, VerificationResult, VersionCompatibility, DEFAULT_FRESHNESS_WINDOW_SECS,
 };
 
 use super::apply_outcome::ApplyMutation;
@@ -112,6 +112,17 @@ impl StepContentSource for NoContent {
 pub trait StepExecutorFactory: Send + Sync {
     /// An executor holding `rendered`, keyed by step id.
     fn executor(&self, rendered: BTreeMap<String, String>) -> Box<dyn StepExecutor + Send>;
+
+    /// As [`executor`](Self::executor), for a request that states how its
+    /// privileged step is to be authorized (AAASM-6491). A tool with no
+    /// privileged step ignores it, which is why the default does.
+    fn executor_elevated(
+        &self,
+        rendered: BTreeMap<String, String>,
+        _elevation: &aa_core::integration::ElevationContext,
+    ) -> Box<dyn StepExecutor + Send> {
+        self.executor(rendered)
+    }
 }
 
 /// The default factory: a plain [`FilesystemExecutor`].
@@ -176,6 +187,10 @@ impl RegisteredIntegration {
 struct AuthoredPlan {
     plan: IntegrationPlan,
     allow_privileged_host_steps: bool,
+    /// The authorization method the plan was reviewed under. Apply refuses a
+    /// different one: consent to "sudo in this terminal" is not consent to a
+    /// dialog.
+    authorization_method: AuthorizationMethod,
 }
 
 /// The lifecycle service the DI-API server calls.
@@ -486,6 +501,7 @@ impl EngineLifecycle {
         &self,
         registered: &RegisteredIntegration,
         plan: &IntegrationPlan,
+        elevation: &ElevationContext,
     ) -> Result<IntegrationEngine<Box<dyn StepExecutor + Send>>, LifecycleError> {
         let rendered = registered
             .content
@@ -493,7 +509,7 @@ impl EngineLifecycle {
             .await
             .map_err(|detail| LifecycleError::Failed { detail })?;
         Ok(IntegrationEngine::new(
-            registered.executor.executor(rendered),
+            registered.executor.executor_elevated(rendered, elevation),
             self.store.clone(),
         ))
     }
@@ -505,7 +521,20 @@ impl EngineLifecycle {
     /// have, so a shared observing engine would report every such artifact as
     /// unreadable and refuse to remove it.
     fn observing_engine(&self, registered: &RegisteredIntegration) -> IntegrationEngine<Box<dyn StepExecutor + Send>> {
-        IntegrationEngine::new(registered.executor.executor(BTreeMap::new()), self.store.clone())
+        self.reversing_engine(registered, &ElevationContext::default())
+    }
+
+    /// An observing engine that can also reverse a privileged step through
+    /// `elevation` (removal, rollback).
+    fn reversing_engine(
+        &self,
+        registered: &RegisteredIntegration,
+        elevation: &ElevationContext,
+    ) -> IntegrationEngine<Box<dyn StepExecutor + Send>> {
+        IntegrationEngine::new(
+            registered.executor.executor_elevated(BTreeMap::new(), elevation),
+            self.store.clone(),
+        )
     }
 
     /// Re-author the plan a stored receipt was applied from.
@@ -716,6 +745,7 @@ impl IntegrationLifecycle for EngineLifecycle {
             AuthoredPlan {
                 plan: plan.clone(),
                 allow_privileged_host_steps: request.allow_privileged_host_steps,
+                authorization_method: request.authorization_method,
             },
         );
         Ok(plan)
@@ -761,6 +791,14 @@ impl IntegrationLifecycle for EngineLifecycle {
             }
         }
 
+        if authored.authorization_method != target.elevation.method {
+            return Err(LifecycleError::Refused {
+                detail: "authorization method changed after review: this plan was reviewed under a different \
+                         way of obtaining administrator authorization; plan again and review it"
+                    .to_string(),
+            });
+        }
+
         let support = registered.integration.version_support();
         let context = ApplyContext {
             receipt_id: format!("receipt-{}", plan.plan_id),
@@ -773,12 +811,25 @@ impl IntegrationLifecycle for EngineLifecycle {
             now_unix_secs: now_unix_secs(),
         };
 
-        let mut engine = self.engine_for(registered, &plan).await?;
-        // Resolve any interrupted operation before adding to it. Safe to call
-        // twice, and it is what makes a repeated install idempotent rather than
-        // additive after a crash.
-        engine.recover(tool, plan.settings_scope).map_err(engine_error)?;
-        let outcome = engine.apply(&plan, &context).map_err(engine_error)?;
+        let mut engine = self.engine_for(registered, &plan, &target.elevation).await?;
+        // The engine is synchronous and a privileged step can block for as long
+        // as an operator takes to type a password, so it runs on the blocking
+        // pool: holding a runtime worker for that long would stall every other
+        // connection (AAASM-6491). Not `block_in_place`, which panics on the
+        // current-thread runtime the test harness uses.
+        let tool_for_task = tool.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            // Resolve any interrupted operation before adding to it. Safe to call
+            // twice, and it is what makes a repeated install idempotent rather
+            // than additive after a crash.
+            engine.recover(&tool_for_task, plan.settings_scope)?;
+            engine.apply(&plan, &context)
+        })
+        .await
+        .map_err(|e| LifecycleError::Failed {
+            detail: format!("the apply task did not complete: {e}"),
+        })?
+        .map_err(engine_error)?;
         // The engine compares canonical forms, so this is an observation rather
         // than a prediction: `mutated` is false only when every step found the
         // target already exactly as the plan describes. Stated, never inferred
@@ -860,10 +911,19 @@ impl IntegrationLifecycle for EngineLifecycle {
             })?;
         let report = self.drift(registered, scope, &status_before.compatibility);
 
-        let mut engine = self.engine_for(registered, &plan).await?;
-        let outcome = engine
-            .repair(&plan, &report, now_unix_secs(), reconcile)
-            .map_err(engine_error)?;
+        let mut engine = self.engine_for(registered, &plan, &target.elevation).await?;
+        let reconcile_owned = reconcile.to_vec();
+        let (plan_for_task, report_for_task) = (plan.clone(), report.clone());
+        // On the blocking pool for the same reason as `apply`: a repair of the
+        // privileged step waits on the operator.
+        let outcome = tokio::task::spawn_blocking(move || {
+            engine.repair(&plan_for_task, &report_for_task, now_unix_secs(), &reconcile_owned)
+        })
+        .await
+        .map_err(|e| LifecycleError::Failed {
+            detail: format!("the repair task did not complete: {e}"),
+        })?
+        .map_err(engine_error)?;
 
         // AAASM-6091: an ownership conflict is also surfaced through
         // `unrepairable` — the one disclosure channel the DI-API wire
@@ -950,9 +1010,17 @@ impl IntegrationLifecycle for EngineLifecycle {
             });
         }
 
-        let mut engine = self.observing_engine(registered);
-        engine.recover(tool, scope).map_err(engine_error)?;
-        let outcome = engine.remove(tool, scope).map_err(engine_error)?;
+        let mut engine = self.reversing_engine(registered, &target.elevation);
+        let tool_for_task = tool.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            engine.recover(&tool_for_task, scope)?;
+            engine.remove(&tool_for_task, scope)
+        })
+        .await
+        .map_err(|e| LifecycleError::Failed {
+            detail: format!("the removal task did not complete: {e}"),
+        })?
+        .map_err(engine_error)?;
         plan.residual.extend(outcome.residual);
         Ok(plan)
     }
@@ -1050,6 +1118,7 @@ mod tests {
                 project_root: None,
                 user_config_home: Some(self.settings.parent().expect("settings has a parent").to_path_buf()),
                 caller_env: None,
+                elevation: ElevationContext::default(),
             }
         }
     }
@@ -1072,6 +1141,32 @@ mod tests {
         assert_eq!(plan.steps.len(), 1);
         assert!(!h.settings.exists(), "plan wrote the tool's settings");
         assert!(!h.store_root.exists(), "plan created the receipt store");
+    }
+
+    #[tokio::test]
+    async fn a_plan_reviewed_under_one_authorization_method_is_not_applied_under_another() {
+        let h = harness(|f| f);
+        let plan = h
+            .service
+            .plan(request().with_authorization_method(AuthorizationMethod::Terminal))
+            .await
+            .expect("plan");
+        let mut target = h.target();
+        target.elevation = ElevationContext::without_broker(AuthorizationMethod::Gui);
+        match h.service.apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target).await {
+            Err(LifecycleError::Refused { detail }) => {
+                assert!(detail.contains("authorization method changed after review"), "{detail}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(!h.settings.exists(), "a refused apply must not write anything");
+
+        target.elevation = ElevationContext::without_broker(AuthorizationMethod::Terminal);
+        h.service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target)
+            .await
+            .expect("the reviewed method applies");
+        assert!(h.settings.exists());
     }
 
     #[tokio::test]
@@ -1472,6 +1567,7 @@ mod tests {
             project_root: Some(project.to_path_buf()),
             user_config_home: None,
             caller_env: None,
+            elevation: ElevationContext::default(),
         }
     }
 
@@ -1749,6 +1845,7 @@ mod tests {
             project_root: None,
             user_config_home: Some(elsewhere.path().to_path_buf()),
             caller_env: None,
+            elevation: ElevationContext::default(),
         };
         let tool = DevToolKind::ClaudeCode;
 
@@ -1800,6 +1897,7 @@ mod tests {
             project_root: None,
             user_config_home: Some(elsewhere.path().to_path_buf()),
             caller_env: None,
+            elevation: ElevationContext::default(),
         };
 
         match h.service.apply(&DevToolKind::ClaudeCode, &plan.plan_id, &other).await {

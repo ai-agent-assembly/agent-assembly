@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use super::caller_env::CallerEnvironment;
 use super::capability::IntegrationCapability;
+use super::elevation::AuthorizationMethod;
 use super::state::ProtectionLevel;
 use super::step::{IntegrationStep, SettingsScope, StepAction};
 use super::version::LIFECYCLE_SCHEMA_VERSION;
@@ -169,6 +170,11 @@ pub struct IntegrationRequest {
     /// [`CallerEnvironment`] for why this is presence-only and carries no
     /// value.
     pub caller_env: Option<CallerEnvironment>,
+    /// How administrator authorization is to be obtained for a privileged host
+    /// step (AAASM-6491). Recorded in the authored plan and re-checked at apply,
+    /// so a plan reviewed under one method never runs under another.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub authorization_method: AuthorizationMethod,
 }
 
 impl IntegrationRequest {
@@ -185,7 +191,15 @@ impl IntegrationRequest {
             allow_privileged_host_steps: false,
             policy_profile: None,
             caller_env: None,
+            authorization_method: AuthorizationMethod::Unstated,
         }
+    }
+
+    /// State how administrator authorization is to be obtained.
+    #[must_use]
+    pub fn with_authorization_method(mut self, method: AuthorizationMethod) -> Self {
+        self.authorization_method = method;
+        self
     }
 
     /// Aim at a different level.

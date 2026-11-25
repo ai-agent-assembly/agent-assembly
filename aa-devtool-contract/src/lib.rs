@@ -181,3 +181,14 @@ pub use aa_core::integration::sha256_hex;
 // `aa-devtool-codex` needed the identical mechanism for `CODEX_CA_CERTIFICATE`.
 // One implementation, not a second copy per adapter crate.
 pub use aa_core::integration::{installed_environment, is_valid_var_name, LaunchEnvStore};
+
+// AAASM-6491: terminal-first administrator authorization. These are flat value
+// types and one blocking trait naming paths and digests only — no secret and no
+// command line can be expressed in them. They live in `aa-core` (not in a devtool
+// crate) because the runtime's published build, which strips devtool crates,
+// still has to speak the elevation frame; an adapter that elevates re-exports
+// them from here like every other lifecycle symbol.
+pub use aa_core::integration::{
+    AuthorizationMethod, ElevatedKind, ElevatedOperation, ElevationBroker, ElevationContext, ElevationOutcome,
+    ElevationPurpose,
+};

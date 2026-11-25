@@ -290,6 +290,11 @@ pub struct LifecycleTarget {
     /// long-lived, shared daemon has no environment of its own worth reading
     /// for a bypass check about one particular caller's launch.
     pub caller_env: Option<aa_core::integration::CallerEnvironment>,
+    /// How this request's one privileged step is to be authorized, and the
+    /// channel back to the operator's terminal when this connection can carry
+    /// one (AAASM-6491). The default states nothing and has no channel, which is
+    /// what every pre-DI-API-8 caller and every non-privileged request means.
+    pub elevation: aa_core::integration::ElevationContext,
 }
 
 impl LifecycleTarget {

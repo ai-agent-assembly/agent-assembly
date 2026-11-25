@@ -22,6 +22,7 @@ mod apply;
 mod settings;
 
 pub mod adjudicating_probe;
+pub mod brokered_authority;
 pub mod bypass;
 pub mod executor;
 pub mod launch_env;
@@ -31,6 +32,7 @@ pub mod probe;
 pub mod scope;
 
 pub use adjudicating_probe::ProxyAdjudicatedProbe;
+pub use brokered_authority::BrokeredAuthority;
 pub use executor::ClaudeCodeStepExecutor;
 pub use lifecycle::ClaudeCodeIntegration;
 pub use managed_settings::{
