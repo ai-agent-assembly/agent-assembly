@@ -46,7 +46,9 @@ use std::sync::Arc;
 use aa_core::integration::ReceiptStore;
 use aa_devtool_claude_code::managed_settings::testing::FakeAuthority;
 use aa_devtool_claude_code::ClaudeCodeIntegration;
+use aa_proto::assembly::devint::v1 as wire;
 use aa_runtime::devint::adapters::claude_code_registration;
+use aa_runtime::devint::codec::{self, DiFrame, DiResponseFrame};
 use aa_runtime::devint::{DevIntServer, DevIntServerConfig, DevIntServices, EngineLifecycle, TokenStore};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -92,6 +94,13 @@ fn registration(recording: &Arc<FakeAuthority>) -> aa_runtime::devint::Registere
     ))
 }
 
+/// What a pseudo-terminal child is told, see [`Harness::aasm_scripted`].
+struct PtyScript {
+    stdin_on_tty: bool,
+    early: String,
+    password: String,
+}
+
 struct Harness {
     // Held for the whole struct lifetime, not just construction — see the
     // module doc's Safety section (AAASM-5989). Field order doesn't matter for
@@ -111,6 +120,9 @@ struct Harness {
     /// prove the default flow did not reach it: terminal authorization goes
     /// through the CLI's `sudo` instead.
     recording: Arc<FakeAuthority>,
+    /// The socket `aasm` is pointed at: the runtime's own, unless a test
+    /// interposes a [`VersionProxy`].
+    cli_socket: std::sync::Mutex<std::path::PathBuf>,
 }
 
 impl Harness {
@@ -193,6 +205,7 @@ impl Harness {
         }
         assert!(socket.exists(), "the test server never bound its socket");
 
+        let cli_socket = std::sync::Mutex::new(socket.clone());
         Self {
             _env_guard,
             dir,
@@ -201,7 +214,13 @@ impl Harness {
             shutdown,
             server: Some(handle),
             recording,
+            cli_socket,
         }
+    }
+
+    /// Point every later `aasm` run at `socket` instead of the runtime's own.
+    fn point_cli_at(&self, socket: &std::path::Path) {
+        *self.cli_socket.lock().expect("cli socket") = socket.to_path_buf();
     }
 
     /// Stop the service and start a fresh one over the same socket, the same
@@ -1355,6 +1374,24 @@ exit 1
     /// `None` gives it no controlling terminal at all (`setsid`, nothing
     /// attached), which is what a cron job or a detached session looks like.
     fn aasm_with_stub(&self, args: &[&str], tty: Option<&str>) -> std::process::Output {
+        self.aasm_scripted(
+            args,
+            tty.map(|password| PtyScript {
+                stdin_on_tty: false,
+                early: String::new(),
+                password: password.to_string(),
+            }),
+        )
+    }
+
+    /// As [`Self::aasm_with_stub`], with control over what is typed and where.
+    ///
+    /// `script.stdin_on_tty` makes the pseudo-terminal the child's stdin as well
+    /// as its controlling terminal, so the command's own `[y/N]` question can be
+    /// asked; `script.early` is typed at once (the line discipline queues it, in
+    /// order, for whichever read comes first), and `script.password` once `sudo
+    /// -v` is waiting.
+    fn aasm_scripted(&self, args: &[&str], script: Option<PtyScript>) -> std::process::Output {
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         use std::os::unix::process::CommandExt;
         use std::process::Stdio;
@@ -1364,7 +1401,7 @@ exit 1
         cmd.arg("integrations")
             .args(args)
             .arg("--no-autostart")
-            .env("AA_DEVINT_SOCKET", &self.socket)
+            .env("AA_DEVINT_SOCKET", &*self.cli_socket.lock().expect("cli socket"))
             .env("AA_DEVINT_TOKEN_FILE", &self.token_file)
             .env("AASM_STATE_DIR", self.dir.path().join("state"))
             .env("HOME", self.dir.path())
@@ -1378,7 +1415,7 @@ exit 1
             .stderr(Stdio::piped());
 
         let mut pty_master = None;
-        if tty.is_some() {
+        if script.is_some() {
             // `posix_openpt` rather than `openpty`: the latter needs `-lutil` on
             // older glibc, and this file is compiled on Linux CI even though
             // every test in it declines there.
@@ -1397,6 +1434,9 @@ exit 1
                 (master, OwnedFd::from_raw_fd(slave))
             };
             let slave_fd = slave.as_raw_fd();
+            if script.as_ref().is_some_and(|s| s.stdin_on_tty) {
+                cmd.stdin(Stdio::from(slave.try_clone().expect("dup the pty slave")));
+            }
             // SAFETY: runs between fork and exec; only async-signal-safe calls.
             unsafe {
                 cmd.pre_exec(move || {
@@ -1428,10 +1468,16 @@ exit 1
         let (child, typist) = match pty_master {
             Some((master, child)) => {
                 let record = self.stub_record();
-                let answer = format!("{}\n", tty.expect("tty answers"));
+                let script = script.expect("pty script");
+                let answer = format!("{}\n", script.password);
+                let early = script.early;
                 let typist = std::thread::spawn(move || {
                     use std::io::Write;
                     let mut master = std::fs::File::from(master);
+                    if !early.is_empty() {
+                        let _ = master.write_all(early.as_bytes());
+                        let _ = master.flush();
+                    }
                     // Type only once `sudo -v` is waiting, so the line is not
                     // consumed by something earlier. Bounded: no answer is
                     // typed if the stub is never reached.
@@ -1895,4 +1941,385 @@ fn the_removal_preview_names_the_method_before_it_asks_for_confirmation() {
     );
     assert!(h.managed_target().exists());
     assert_eq!(h.stub_calls().len(), before);
+}
+
+// ── a controlling terminal, for real ────────────────────────────────────────
+
+/// `remove` without `--yes`, on a genuine controlling terminal: the pseudo-
+/// terminal is the child's stdin (the command's own question) *and* its
+/// controlling terminal (`/dev/tty`: the delete question, then the stub's
+/// password read). The three lines are typed in the order the reads happen, so
+/// a read that did not happen — or happened out of order — leaves a line for
+/// the wrong consumer and fails the run.
+#[test]
+fn remove_asks_on_the_controlling_terminal_and_reads_each_answer_in_order() {
+    let scenario = "remove_asks_on_the_controlling_terminal_and_reads_each_answer_in_order";
+    if !require_claude(scenario) {
+        return;
+    }
+    let h = Harness::start();
+    let install = h.aasm_with_stub(
+        &["install", "claude-code", "--install-managed-settings", "--yes"],
+        Some(PASSWORD),
+    );
+    assert!(install.status.success(), "{}{}", stdout(&install), stderr(&install));
+    let before = h.stub_calls().len();
+    assert!(h.managed_target().exists());
+
+    let removal = h.aasm_scripted(
+        &["remove", "claude-code"],
+        Some(PtyScript {
+            stdin_on_tty: true,
+            early: "y\ny\n".to_string(),
+            password: PASSWORD.to_string(),
+        }),
+    );
+    let message = format!("{}{}", stdout(&removal), stderr(&removal));
+    println!("--- remove on a tty ---\n{message}");
+    assert!(removal.status.success(), "{message}");
+    assert!(!h.managed_target().exists(), "the file must be gone");
+    assert!(h.stub_calls().len() > before, "sudo must have been used");
+    assert!(!message.contains(PASSWORD), "password in output");
+}
+
+/// Declining the delete question on `/dev/tty`, or sending end-of-file to it,
+/// changes nothing and never reaches `sudo`.
+#[test]
+fn declining_or_closing_the_delete_question_changes_nothing() {
+    let scenario = "declining_or_closing_the_delete_question_changes_nothing";
+    if !require_claude(scenario) {
+        return;
+    }
+    for (label, early) in [("n", "y\nn\n"), ("^D", "y\n\u{4}")] {
+        let h = Harness::start();
+        let install = h.aasm_with_stub(
+            &["install", "claude-code", "--install-managed-settings", "--yes"],
+            Some(PASSWORD),
+        );
+        assert!(install.status.success(), "{}{}", stdout(&install), stderr(&install));
+        let before = h.stub_calls().len();
+
+        let removal = h.aasm_scripted(
+            &["remove", "claude-code"],
+            Some(PtyScript {
+                stdin_on_tty: true,
+                early: early.to_string(),
+                password: PASSWORD.to_string(),
+            }),
+        );
+        let message = format!("{}{}", stdout(&removal), stderr(&removal));
+        println!("--- remove, answer {label} ---\n{message}");
+        assert_eq!(removal.status.code(), Some(9), "{label}: {message}");
+        assert!(h.managed_target().exists(), "{label}: nothing may be removed");
+        assert_eq!(h.stub_calls().len(), before, "{label}: sudo must not be reached");
+    }
+}
+
+// ── an older runtime, through the real CLI ──────────────────────────────────
+
+/// A man in the middle that makes a real runtime look like an older one.
+///
+/// It speaks the DI-API codec on both sides: the client's `Hello` is rewritten
+/// to offer nothing above `cap`, so the real server negotiates that version and
+/// serves exactly what a runtime of that age would. Optionally the removal
+/// preview's steps are replaced by `removal_steps`, which is how a step kind the
+/// installed adapter does not itself produce reaches the CLI. Every client
+/// frame is logged so a test can say what was — and was not — sent.
+struct VersionProxy {
+    stop: CancellationToken,
+    thread: Option<std::thread::JoinHandle<()>>,
+    seen: Arc<std::sync::Mutex<Vec<Seen>>>,
+}
+
+/// One frame the CLI sent, or one fact about what came back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Seen {
+    Hello(Vec<u32>),
+    Negotiated(u32),
+    Request { verb: i32, remove_plan_id: String },
+    ElevationResult,
+    ElevationRequestFromRuntime,
+}
+
+impl VersionProxy {
+    fn start(
+        upstream: std::path::PathBuf,
+        listen: std::path::PathBuf,
+        cap: u32,
+        removal_steps: Option<Vec<wire::StepView>>,
+    ) -> Self {
+        let stop = CancellationToken::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (stop_t, seen_t, listen_t) = (stop.clone(), seen.clone(), listen.clone());
+        let thread = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("proxy runtime");
+            rt.block_on(async move {
+                let listener = tokio::net::UnixListener::bind(&listen_t).expect("bind the version proxy");
+                loop {
+                    tokio::select! {
+                        () = stop_t.cancelled() => break,
+                        accepted = listener.accept() => {
+                            let Ok((client, _)) = accepted else { break };
+                            let upstream = upstream.clone();
+                            let seen = seen_t.clone();
+                            let steps = removal_steps.clone();
+                            tokio::spawn(async move {
+                                let Ok(server) = tokio::net::UnixStream::connect(&upstream).await else { return };
+                                let (mut cr, mut cw) = tokio::io::split(client);
+                                let (mut sr, mut sw) = tokio::io::split(server);
+                                let seen_c = seen.clone();
+                                let up = async move {
+                                    while let Ok(frame) = codec::read_frame(&mut cr).await {
+                                        let frame = match frame {
+                                            DiFrame::Hello(mut hello) => {
+                                                hello.di_api_versions.retain(|v| *v <= cap);
+                                                seen_c.lock().expect("seen").push(Seen::Hello(hello.di_api_versions.clone()));
+                                                DiFrame::Hello(hello)
+                                            }
+                                            DiFrame::Request(request) => {
+                                                seen_c.lock().expect("seen").push(Seen::Request {
+                                                    verb: request.verb,
+                                                    remove_plan_id: request.remove.as_ref().map(|r| r.plan_id.clone()).unwrap_or_default(),
+                                                });
+                                                DiFrame::Request(request)
+                                            }
+                                            DiFrame::ElevationResult(result) => {
+                                                seen_c.lock().expect("seen").push(Seen::ElevationResult);
+                                                DiFrame::ElevationResult(result)
+                                            }
+                                        };
+                                        if codec::write_client_frame(&mut sw, frame).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                };
+                                let down = async move {
+                                    while let Ok(frame) = codec::read_response_frame(&mut sr).await {
+                                        let frame = match frame {
+                                            DiResponseFrame::HelloAck(ack) => {
+                                                seen.lock().expect("seen").push(Seen::Negotiated(ack.di_api_version));
+                                                DiResponseFrame::HelloAck(ack)
+                                            }
+                                            DiResponseFrame::Response(mut response) => {
+                                                if let (Some(steps), Some(removal)) = (&steps, response.removal.as_mut()) {
+                                                    removal.steps = steps.clone();
+                                                }
+                                                DiResponseFrame::Response(response)
+                                            }
+                                            DiResponseFrame::ElevationRequest(request) => {
+                                                seen.lock().expect("seen").push(Seen::ElevationRequestFromRuntime);
+                                                DiResponseFrame::ElevationRequest(request)
+                                            }
+                                            other => other,
+                                        };
+                                        if codec::write_frame(&mut cw, frame).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                };
+                                tokio::join!(up, down);
+                            });
+                        }
+                    }
+                }
+            });
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !listen.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(listen.exists(), "the version proxy never bound its socket");
+        Self {
+            stop,
+            thread: Some(thread),
+            seen,
+        }
+    }
+
+    fn seen(&self) -> Vec<Seen> {
+        self.seen.lock().expect("seen").clone()
+    }
+
+    fn requests(&self, verb: wire::Verb) -> Vec<Seen> {
+        self.seen()
+            .into_iter()
+            .filter(|s| matches!(s, Seen::Request { verb: v, .. } if *v == verb as i32))
+            .collect()
+    }
+}
+
+impl Drop for VersionProxy {
+    fn drop(&mut self) {
+        self.stop.cancel();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A scripted removal-preview step.
+fn scripted_step(id: &str, kind: &str, privilege: &str, scope: &str, paths: &[&str]) -> wire::StepView {
+    wire::StepView {
+        id: id.to_string(),
+        summary: format!("scripted {kind}"),
+        action_kind: kind.to_string(),
+        requirement: "required".to_string(),
+        privilege: privilege.to_string(),
+        settings_scope: scope.to_string(),
+        artifact_paths: paths.iter().map(|p| (*p).to_string()).collect(),
+        reversible: true,
+        ..wire::StepView::default()
+    }
+}
+
+/// A harness with the managed file installed (through the runtime directly, at
+/// its own version) and `aasm` pointed at a proxy that caps the version at 7.
+fn installed_behind_a_v7_runtime(steps: Option<Vec<wire::StepView>>) -> (Harness, VersionProxy) {
+    let h = Harness::start();
+    let install = h.aasm_with_stub(
+        &["install", "claude-code", "--install-managed-settings", "--yes"],
+        Some(PASSWORD),
+    );
+    assert!(install.status.success(), "{}{}", stdout(&install), stderr(&install));
+    let listen = h.dir.path().join("run").join("devint-v7.sock");
+    let proxy = VersionProxy::start(h.socket.clone(), listen.clone(), 7, steps);
+    h.point_cli_at(&listen);
+    (h, proxy)
+}
+
+fn assert_refused_for_age(out: &Output, label: &str) {
+    let message = format!("{}{}", stdout(out), stderr(out));
+    println!("--- {label} ---\n{message}");
+    assert_eq!(out.status.code(), Some(4), "{label}: {message}");
+    assert!(
+        message.contains("DI-API 7"),
+        "{label}: names the negotiated version: {message}"
+    );
+    assert!(message.contains("upgrade the runtime"), "{label}: {message}");
+    assert!(message.contains("--admin-auth gui"), "{label}: {message}");
+}
+
+/// `remove` against a DI-API 7 runtime, when the removal reaches the managed
+/// file: exit 4, and the only thing sent after negotiation is the preview.
+#[test]
+fn remove_reaching_the_managed_file_is_refused_by_a_v7_runtime_before_anything_is_sent() {
+    let scenario = "remove_reaching_the_managed_file_is_refused_by_a_v7_runtime";
+    if !require_claude(scenario) {
+        return;
+    }
+    let (h, proxy) = installed_behind_a_v7_runtime(None);
+    let (stub_before, dialog_before) = (h.stub_calls().len(), h.recording.calls().len());
+
+    let out = h.aasm_with_stub(&["remove", "claude-code", "--yes"], Some(PASSWORD));
+    assert_refused_for_age(&out, "remove at v7");
+    assert!(proxy.seen().contains(&Seen::Negotiated(7)), "{:?}", proxy.seen());
+    let removals = proxy.requests(wire::Verb::Remove);
+    assert_eq!(
+        removals,
+        vec![Seen::Request {
+            verb: wire::Verb::Remove as i32,
+            remove_plan_id: String::new()
+        }],
+        "only the preview may be sent: {:?}",
+        proxy.seen()
+    );
+    assert!(h.managed_target().exists(), "nothing may be removed");
+    assert_eq!(h.stub_calls().len(), stub_before, "sudo must not be reached");
+    assert_eq!(h.recording.calls().len(), dialog_before, "no dialog either");
+}
+
+/// `repair` against a DI-API 7 runtime, when the drift is on the managed file.
+#[test]
+fn repair_of_the_managed_file_is_refused_by_a_v7_runtime_before_anything_is_sent() {
+    let scenario = "repair_of_the_managed_file_is_refused_by_a_v7_runtime";
+    if !require_claude(scenario) {
+        return;
+    }
+    let (h, proxy) = installed_behind_a_v7_runtime(None);
+    let (stub_before, dialog_before) = (h.stub_calls().len(), h.recording.calls().len());
+    std::fs::remove_file(h.managed_target()).expect("drift the managed file");
+
+    let out = h.aasm_with_stub(&["repair", "claude-code", "--yes"], Some(PASSWORD));
+    assert_refused_for_age(&out, "repair at v7");
+    assert!(proxy.seen().contains(&Seen::Negotiated(7)), "{:?}", proxy.seen());
+    assert!(
+        proxy.requests(wire::Verb::Repair).is_empty(),
+        "no repair may be sent: {:?}",
+        proxy.seen()
+    );
+    assert!(!h.managed_target().exists(), "nothing may be re-placed");
+    assert_eq!(h.stub_calls().len(), stub_before, "sudo must not be reached");
+    assert_eq!(h.recording.calls().len(), dialog_before, "no dialog either");
+}
+
+/// Steps that legitimately carry no path and are not managed — proxy wiring and
+/// an MCP list — must not be refused just because the runtime is old.
+#[test]
+fn pathless_unprivileged_steps_are_not_refused_by_a_v7_runtime() {
+    let scenario = "pathless_unprivileged_steps_are_not_refused_by_a_v7_runtime";
+    if !require_claude(scenario) {
+        return;
+    }
+    for (label, step) in [
+        (
+            "configure_proxy",
+            scripted_step("proxy-env", "configure_proxy", "user", "user", &[]),
+        ),
+        (
+            "configure_mcp_servers",
+            scripted_step("mcp", "configure_mcp_servers", "user", "", &[]),
+        ),
+    ] {
+        let (h, proxy) = installed_behind_a_v7_runtime(Some(vec![step]));
+        let stub_before = h.stub_calls().len();
+
+        let out = h.aasm_with_stub(&["remove", "claude-code", "--yes"], None);
+        let message = format!("{}{}", stdout(&out), stderr(&out));
+        println!("--- remove at v7, {label}-only ---\n{message}");
+        assert!(out.status.success(), "{label}: {message}");
+        assert!(!message.contains("upgrade the runtime"), "{label}: {message}");
+        assert!(
+            proxy.seen().contains(&Seen::Negotiated(7)),
+            "{label}: {:?}",
+            proxy.seen()
+        );
+        assert_eq!(h.stub_calls().len(), stub_before, "{label}: sudo is not involved");
+    }
+}
+
+/// A legacy managed-settings step names no path yet is the managed file; a kind
+/// this build cannot name might be. Both are refused by a v7 runtime.
+#[test]
+fn legacy_managed_and_unknown_steps_are_refused_by_a_v7_runtime() {
+    let scenario = "legacy_managed_and_unknown_steps_are_refused_by_a_v7_runtime";
+    if !require_claude(scenario) {
+        return;
+    }
+    for (label, step) in [
+        (
+            "apply_legacy_managed_settings, no paths",
+            scripted_step("legacy", "apply_legacy_managed_settings", "user", "", &[]),
+        ),
+        (
+            "unknown kind",
+            scripted_step("future", "kind_from_a_newer_runtime", "user", "", &[]),
+        ),
+    ] {
+        let (h, proxy) = installed_behind_a_v7_runtime(Some(vec![step]));
+        let stub_before = h.stub_calls().len();
+
+        let out = h.aasm_with_stub(&["remove", "claude-code", "--yes"], None);
+        assert_refused_for_age(&out, label);
+        assert_eq!(
+            proxy.requests(wire::Verb::Remove).len(),
+            1,
+            "{label}: only the preview: {:?}",
+            proxy.seen()
+        );
+        assert!(h.managed_target().exists(), "{label}: nothing may be removed");
+        assert_eq!(h.stub_calls().len(), stub_before, "{label}: sudo must not be reached");
+    }
 }
