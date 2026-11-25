@@ -119,6 +119,7 @@ pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<Pla
             requested_level: requested_level(args.install_managed_settings),
             project_root: &project_root,
             user_config_home: &user_config_home,
+            authorization_method: "",
         })
         .await
         .map_err(verb_failure)?;

@@ -105,6 +105,7 @@ impl Target {
             project_root: &self.project_root,
             user_config_home: &self.user_config_home,
             caller_env: Some(&self.caller_env),
+            authorization_method: "",
         }
     }
 }

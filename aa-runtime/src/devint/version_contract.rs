@@ -52,6 +52,8 @@
 //! fabricated in the field's place" is the wrong property here — the field's
 //! place is on the other side of the wire.
 
+use aa_proto::assembly::devint::v1 as wire;
+
 use super::apply_outcome::{ApplyMutation, MutationUnknown};
 use super::client::{ClientError, DevIntClient, PlanRequest, TargetRequest};
 use super::negotiate::{
@@ -678,6 +680,157 @@ async fn user_scope_reaches_the_service_at_v7() {
         server.lifecycle().calls() > before,
         "the plan must have been served by the lifecycle, not fabricated by the client"
     );
+    server.shutdown().await;
+}
+
+// ── v8: terminal elevation (AAASM-6491) ─────────────────────────────────────
+
+/// **New client, old peer — refused before the send.**
+///
+/// A pre-v8 runtime drops `authorization_method` on decode and opens the macOS
+/// GUI dialog from its detached process. Nothing the reply says would reveal it,
+/// so the gate is the version comparison, made before anything is sent.
+#[tokio::test]
+async fn v8_is_required_for_terminal_authorization_and_an_older_peer_is_refused_before_the_send() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    let home = a_real_user_config_home();
+    let home_path = home.path().join(".claude");
+    for version in DI_API_MIN_SUPPORTED..DI_API_TERMINAL_ELEVATION_SINCE {
+        let mut client = connect_offering(&server, &[version]).await;
+        let before = server.lifecycle().calls();
+        let outcome = client
+            .plan(PlanRequest {
+                tool_id: &claude_code_id(),
+                profile: "recommended",
+                settings_scope: "managed",
+                user_config_home: home_path.to_str().expect("utf-8 tempdir"),
+                authorization_method: "terminal",
+                ..PlanRequest::default()
+            })
+            .await;
+        match outcome {
+            Err(ClientError::Incompatible(refusal)) => {
+                assert!(
+                    refusal.remediation.contains("--admin-auth gui"),
+                    "v{version}: {}",
+                    refusal.remediation
+                );
+            }
+            other => panic!("v{version}: expected a refusal before the send, got {other:?}"),
+        }
+        assert_eq!(
+            server.lifecycle().calls(),
+            before,
+            "v{version}: the request must never have reached the wire"
+        );
+    }
+    server.shutdown().await;
+}
+
+/// `gui` below v8 is the old runtime's only behaviour, so it is *dropped*, not
+/// refused — and a v8 server never sees a stated method from a v7 peer.
+#[tokio::test]
+async fn gui_below_v8_is_dropped_so_an_older_peer_still_works() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    let mut client = connect_offering(&server, &[DI_API_TERMINAL_ELEVATION_SINCE - 1]).await;
+    client
+        .plan(PlanRequest {
+            tool_id: &claude_code_id(),
+            profile: "recommended",
+            settings_scope: "managed",
+            authorization_method: "gui",
+            ..PlanRequest::default()
+        })
+        .await
+        .expect("gui is the pre-v8 behaviour and must still work");
+    server.shutdown().await;
+}
+
+/// **Positive control**: at v8 the same request reaches the service.
+#[tokio::test]
+async fn terminal_authorization_reaches_the_service_at_v8() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    let mut client = connect_offering(&server, &[DI_API_TERMINAL_ELEVATION_SINCE]).await;
+    let before = server.lifecycle().calls();
+    client
+        .plan(PlanRequest {
+            tool_id: &claude_code_id(),
+            profile: "recommended",
+            settings_scope: "managed",
+            authorization_method: "terminal",
+            ..PlanRequest::default()
+        })
+        .await
+        .expect("v8 carries the method");
+    assert!(server.lifecycle().calls() > before);
+    server.shutdown().await;
+}
+
+/// The handler's answer reaches the runtime; ids are the request's own.
+#[tokio::test]
+async fn an_installed_handler_answers_the_runtimes_elevation_request() {
+    use aa_core::integration::{ElevatedKind, ElevatedOperation, ElevationOutcome, ElevationPurpose};
+    let operation = ElevatedOperation {
+        kind: ElevatedKind::InstallFile,
+        purpose: ElevationPurpose::PlaceReviewed,
+        target: std::path::PathBuf::from("/t"),
+        staged: Some(std::path::PathBuf::from("/s")),
+        staged_sha256: Some("ab".repeat(32)),
+    };
+    let server = TestServer::start(FakeLifecycle::elevating(operation)).await;
+    let home = a_real_user_config_home();
+    let home_path = home.path().join(".claude");
+    let mut client = connect_offering(&server, &[DI_API_TERMINAL_ELEVATION_SINCE]).await;
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    client.set_elevation_handler(Box::new(move |asked| {
+        log.lock().expect("log").push(asked.staged_sha256.clone());
+        wire::ElevationResult {
+            // Deliberately wrong: the client must overwrite them.
+            request_id: 0,
+            sequence: 0,
+            outcome: wire::ElevationResultCode::Completed as i32,
+            detail: String::new(),
+        }
+    }));
+    client
+        .apply(
+            &claude_code_id(),
+            "plan-1",
+            TargetRequest {
+                settings_scope: "user",
+                user_config_home: home_path.to_str().expect("utf-8 tempdir"),
+                authorization_method: "terminal",
+                ..TargetRequest::default()
+            },
+        )
+        .await
+        .expect("a completed elevation lets the apply finish");
+    assert_eq!(seen.lock().expect("log").len(), 1);
+    assert_eq!(
+        server.lifecycle().elevation_outcomes(),
+        vec![ElevationOutcome::Completed]
+    );
+
+    // With no handler the client cancels rather than leaving the runtime waiting.
+    let mut bare = connect_offering(&server, &[DI_API_TERMINAL_ELEVATION_SINCE]).await;
+    let refused = bare
+        .apply(
+            &claude_code_id(),
+            "plan-1",
+            TargetRequest {
+                settings_scope: "user",
+                user_config_home: home_path.to_str().expect("utf-8 tempdir"),
+                authorization_method: "terminal",
+                ..TargetRequest::default()
+            },
+        )
+        .await;
+    assert!(matches!(refused, Err(ClientError::Denied(_))), "{refused:?}");
+    assert!(matches!(
+        server.lifecycle().elevation_outcomes().last(),
+        Some(ElevationOutcome::Cancelled(_))
+    ));
     server.shutdown().await;
 }
 

@@ -36,7 +36,8 @@ use aa_proto::assembly::devint::v1 as wire;
 use super::apply_outcome::ApplyMutation;
 use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
 use super::negotiate::{
-    DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROJECT_ROOT_SINCE, DI_API_USER_CONFIG_HOME_SINCE,
+    DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROJECT_ROOT_SINCE, DI_API_TERMINAL_ELEVATION_SINCE,
+    DI_API_USER_CONFIG_HOME_SINCE,
 };
 use super::projection::parse_scope;
 use super::provenance::{self, BuildIdentity, PeerProvenance, ProvenanceVerdict};
@@ -112,6 +113,34 @@ fn handshake_timed_out(path: &Path, timeout: Duration) -> ClientError {
 /// remediation and the supported window is precisely what `Incompatible`
 /// already models. The reason names the negotiated version, so nothing is lost
 /// by the origin being local.
+/// Refuse a `terminal` authorization request on a connection that cannot carry
+/// it (AAASM-6491).
+///
+/// A pre-v8 runtime would silently drop `authorization_method` and raise the
+/// macOS GUI dialog from its detached process — exactly what terminal-first
+/// authorization exists to prevent — with no negotiation signal, the same
+/// undetectable-discard hazard as [`refuse_project_scope_below_v6`]. So the gate
+/// is a version comparison before the send. Reported as a locally built
+/// `Incompatible` for the same reason that function gives.
+fn refuse_terminal_below_v8(negotiated_version: u32, method: &str) -> Result<(), ClientError> {
+    if negotiated_version >= DI_API_TERMINAL_ELEVATION_SINCE || method != "terminal" {
+        return Ok(());
+    }
+    Err(ClientError::Incompatible(wire::Incompatible {
+        reason: format!(
+            "this connection negotiated DI-API {negotiated_version}; terminal authorization arrived in \
+             DI-API {DI_API_TERMINAL_ELEVATION_SINCE}, so this runtime would ignore the request and open the \
+             macOS authorization dialog from a background process"
+        ),
+        remediation: format!(
+            "upgrade the running AASM runtime to one speaking DI-API {DI_API_TERMINAL_ELEVATION_SINCE} or later, \
+             or pass --admin-auth gui to use the macOS dialog"
+        ),
+        min_supported: DI_API_MIN_SUPPORTED,
+        max_supported: DI_API_MAX_SUPPORTED,
+    }))
+}
+
 fn refuse_project_scope_below_v6(negotiated_version: u32, settings_scope: &str) -> Result<(), ClientError> {
     if negotiated_version >= DI_API_PROJECT_ROOT_SINCE {
         return Ok(());
@@ -364,6 +393,12 @@ pub struct PlanRequest<'a> {
     /// the defect in AAASM-5957, not a fallback. Pass `""` when there is none to
     /// state and expect a refusal, not a default, if the scope needed one.
     pub user_config_home: &'a str,
+    /// How administrator authorization is to be obtained for a privileged host
+    /// step: `"terminal"`, `"gui"` or `""` to state nothing (AAASM-6491).
+    ///
+    /// `"terminal"` needs DI-API 8 and is refused below it; see
+    /// [`refuse_terminal_below_v8`].
+    pub authorization_method: &'a str,
 }
 
 /// Which installed integration a read-or-reverse invocation is about.
@@ -410,7 +445,17 @@ pub struct TargetRequest<'a> {
     /// reading a `None` here already produces — there is no false-claim-of-
     /// safety direction for this field to be silently dropped into.
     pub caller_env: Option<&'a aa_core::integration::CallerEnvironment>,
+    /// How administrator authorization is to be obtained, on the same terms as
+    /// [`PlanRequest::authorization_method`]. Read by `apply`, `repair` and
+    /// `remove`.
+    pub authorization_method: &'a str,
 }
+
+/// Answers an elevation request the runtime sent while a request was in flight.
+///
+/// Runs on the calling task and may block for as long as an operator takes to
+/// type a password; the runtime is waiting on it by design.
+pub type ElevationHandler = Box<dyn FnMut(&wire::ElevationRequest) -> wire::ElevationResult + Send>;
 
 /// A connected, negotiated DI-API client.
 pub struct DevIntClient {
@@ -419,6 +464,7 @@ pub struct DevIntClient {
     negotiated: Negotiated,
     token: Option<String>,
     next_request_id: u64,
+    elevation_handler: Option<ElevationHandler>,
 }
 
 impl DevIntClient {
@@ -565,7 +611,17 @@ impl DevIntClient {
             negotiated,
             token: capability_token,
             next_request_id: 1,
+            elevation_handler: None,
         })
+    }
+
+    /// Install the handler that answers the runtime's elevation requests.
+    ///
+    /// Without one, an elevation request is answered `CANCELLED` rather than
+    /// ignored: the runtime is blocked waiting, and silence would hold it for the
+    /// whole per-operation timeout (AAASM-6491).
+    pub fn set_elevation_handler(&mut self, handler: ElevationHandler) {
+        self.elevation_handler = Some(handler);
     }
 
     /// What was agreed for this connection.
@@ -587,6 +643,7 @@ impl DevIntClient {
     pub async fn plan(&mut self, args: PlanRequest<'_>) -> Result<wire::PlanView, ClientError> {
         refuse_project_scope_below_v6(self.negotiated.di_api_version, args.settings_scope)?;
         refuse_user_scope_below_v7(self.negotiated.di_api_version, args.settings_scope)?;
+        let authorization_method = self.wire_authorization_method(args.authorization_method)?;
         let mut request = self.request(DiVerb::Plan, args.tool_id);
         request.plan = Some(wire::PlanArgs {
             profile: args.profile.to_string(),
@@ -596,7 +653,7 @@ impl DevIntClient {
             policy_profile_id: args.policy_profile_id.to_string(),
             project_root: args.project_root.to_string(),
             user_config_home: args.user_config_home.to_string(),
-            authorization_method: String::new(),
+            authorization_method,
         });
         let response = self.call(request).await?;
         response.plan.ok_or(ClientError::UnexpectedFrame)
@@ -718,6 +775,7 @@ impl DevIntClient {
     fn targeted(&self, verb: DiVerb, tool_id: &str, target: TargetRequest<'_>) -> Result<wire::Request, ClientError> {
         refuse_project_scope_below_v6(self.negotiated.di_api_version, target.settings_scope)?;
         refuse_user_scope_below_v7(self.negotiated.di_api_version, target.settings_scope)?;
+        let authorization_method = self.wire_authorization_method(target.authorization_method)?;
         let mut request = self.request(verb, tool_id);
         let (caller_env_examined, caller_env_present) = match target.caller_env {
             Some(env) => (
@@ -732,9 +790,24 @@ impl DevIntClient {
             user_config_home: target.user_config_home.to_string(),
             caller_env_examined,
             caller_env_present,
-            authorization_method: String::new(),
+            authorization_method,
         });
         Ok(request)
+    }
+
+    /// The method as it may go on the wire for this connection.
+    ///
+    /// `terminal` below DI-API 8 is refused. `gui` below it is *dropped*, not
+    /// refused: a pre-v8 runtime only ever had the dialog, so saying nothing is
+    /// saying `gui`, and sending the field would be refused by a v8 server for a
+    /// peer that never negotiated it.
+    fn wire_authorization_method(&self, method: &str) -> Result<String, ClientError> {
+        let version = self.negotiated.di_api_version;
+        if version >= DI_API_TERMINAL_ELEVATION_SINCE {
+            return Ok(method.to_string());
+        }
+        refuse_terminal_below_v8(version, method)?;
+        Ok(String::new())
     }
 
     fn request(&self, verb: DiVerb, tool_id: &str) -> wire::Request {
@@ -750,10 +823,28 @@ impl DevIntClient {
     async fn call(&mut self, request: wire::Request) -> Result<wire::Response, ClientError> {
         self.next_request_id += 1;
         codec::write_client_frame(&mut self.writer, DiFrame::Request(Box::new(request))).await?;
-        match codec::read_response_frame(&mut self.reader).await? {
-            DiResponseFrame::Response(response) => Ok(*response),
-            DiResponseFrame::Denied(denied) => Err(ClientError::Denied(denied)),
-            _ => Err(ClientError::UnexpectedFrame),
+        loop {
+            match codec::read_response_frame(&mut self.reader).await? {
+                DiResponseFrame::Response(response) => return Ok(*response),
+                DiResponseFrame::Denied(denied) => return Err(ClientError::Denied(denied)),
+                // The runtime is blocked on this answer while the verb is in
+                // flight (AAASM-6491). Whatever the handler says, the ids are
+                // the request's own: a handler cannot answer a different one.
+                DiResponseFrame::ElevationRequest(asked) => {
+                    let mut answer = match self.elevation_handler.as_mut() {
+                        Some(handler) => handler(&asked),
+                        None => wire::ElevationResult {
+                            outcome: wire::ElevationResultCode::Cancelled as i32,
+                            detail: "this client has no way to authorize an administrator operation".to_string(),
+                            ..Default::default()
+                        },
+                    };
+                    answer.request_id = asked.request_id;
+                    answer.sequence = asked.sequence;
+                    codec::write_client_frame(&mut self.writer, DiFrame::ElevationResult(answer)).await?;
+                }
+                _ => return Err(ClientError::UnexpectedFrame),
+            }
         }
     }
 }
