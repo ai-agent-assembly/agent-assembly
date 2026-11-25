@@ -67,6 +67,7 @@ mod apply_outcome_falsification;
 pub mod audit;
 pub mod client;
 pub mod codec;
+pub mod elevation;
 pub mod enrolment;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod fixture;

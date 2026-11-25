@@ -49,6 +49,7 @@ use aa_proto::assembly::devint::v1 as wire;
 
 use super::audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
 use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
+use super::elevation::{self, BrokerCall, ChannelBroker};
 use super::lifecycle::{ApprovalInput, IntegrationLifecycle, LifecycleError, LifecycleTarget};
 use super::negotiate::{self, verb_available_at};
 use super::projection as project;
@@ -116,6 +117,9 @@ pub struct DevIntServices {
     /// build's identity over a real socket — the mismatch this exists to catch
     /// cannot otherwise be reproduced without two compilations.
     pub provenance: Arc<RuntimeProvenance>,
+    /// How long an operator gets to answer one elevation request before it is
+    /// read as cancelled (AAASM-6491).
+    pub elevation_timeout: Duration,
 }
 
 impl DevIntServices {
@@ -126,7 +130,15 @@ impl DevIntServices {
             tokens,
             audit,
             provenance: Arc::new(RuntimeProvenance::detect()),
+            elevation_timeout: elevation::DEFAULT_ELEVATION_TIMEOUT,
         }
+    }
+
+    /// The same services with a different per-operation elevation timeout.
+    #[must_use]
+    pub fn with_elevation_timeout(mut self, timeout: Duration) -> Self {
+        self.elevation_timeout = timeout;
+        self
     }
 
     /// The same services, answering with `provenance` rather than the running
@@ -357,8 +369,45 @@ async fn serve_connection(
             }
         };
 
+        let mut close_after = false;
         let response = match frame {
-            DiFrame::Request(request) => connection.serve(*request).await,
+            DiFrame::Request(request) => {
+                // While this request is in flight the lifecycle may ask the
+                // client, over this same connection, to run one elevated
+                // operation (AAASM-6491). `select!` lets the connection task
+                // service that exchange while the lifecycle waits on it.
+                let request_id = request.request_id;
+                let (calls, mut inbox) = tokio::sync::mpsc::unbounded_channel::<BrokerCall>();
+                let broker: Option<Arc<dyn aa_core::integration::ElevationBroker>> = (connection.version
+                    >= negotiate::DI_API_TERMINAL_ELEVATION_SINCE)
+                    .then(|| Arc::new(ChannelBroker::new(request_id, calls.clone())) as _);
+                let served = connection.serve(*request, broker);
+                tokio::pin!(served);
+                let response = loop {
+                    tokio::select! {
+                        response = &mut served => break response,
+                        Some(call) = inbox.recv() => {
+                            let done = elevation::exchange(
+                                &mut reader,
+                                &mut writer,
+                                call.request,
+                                connection.services.elevation_timeout,
+                            )
+                            .await;
+                            if done.poisoned {
+                                connection.audit_protocol_failure("elevation_exchange_failed");
+                                close_after = true;
+                            }
+                            // A dropped receiver means the broker already gave up.
+                            let _ = call.reply.send(done.outcome);
+                        }
+                    }
+                };
+                // `calls` is held to here so the inbox never reads as closed
+                // while the request is still being served.
+                drop(calls);
+                response
+            }
             // Step 2's other half: a second `Hello` is a renegotiation attempt,
             // which is how a downgrade would be staged. Refused, audited, and
             // the negotiated version stands.
@@ -386,6 +435,12 @@ async fn serve_connection(
         };
 
         codec::write_frame(&mut writer, response).await?;
+        if close_after {
+            // The peer answered an elevation request with something other than
+            // its result, so the stream's framing can no longer be trusted.
+            let _ = writer.shutdown().await;
+            return Ok(());
+        }
     }
 }
 
@@ -420,7 +475,11 @@ impl Connection {
     }
 
     /// Steps 3–6 for one request.
-    async fn serve(&self, request: wire::Request) -> DiResponseFrame {
+    async fn serve(
+        &self,
+        request: wire::Request,
+        broker: Option<Arc<dyn aa_core::integration::ElevationBroker>>,
+    ) -> DiResponseFrame {
         let request_id = request.request_id;
 
         // Step 3: the verb must be in the closed set.
@@ -469,7 +528,7 @@ impl Connection {
         }
 
         // Step 6: the lifecycle port, then the projection.
-        let outcome = self.dispatch(verb, &request).await;
+        let outcome = self.dispatch(verb, &request, broker).await;
         self.services.audit.record(
             DevIntAuditEvent::new(
                 now_unix_secs(),
@@ -491,7 +550,12 @@ impl Connection {
     /// The one exhaustive match over the verb space. Every arm goes to the
     /// lifecycle port and comes back through a projection; no arm reaches
     /// anything else.
-    async fn dispatch(&self, verb: DiVerb, request: &wire::Request) -> Result<wire::Response, LifecycleError> {
+    async fn dispatch(
+        &self,
+        verb: DiVerb,
+        request: &wire::Request,
+        broker: Option<Arc<dyn aa_core::integration::ElevationBroker>>,
+    ) -> Result<wire::Response, LifecycleError> {
         let tool = project::parse_tool_id(&request.tool_id);
         let mut response = wire::Response {
             request_id: request.request_id,
@@ -518,7 +582,8 @@ impl Connection {
                 // The same target the read verbs use, vetted the same way: the
                 // project a plan is executed from has to mean what the project a
                 // plan was authored for meant, or comparing them proves nothing.
-                let target = build_target(request, self.version)?;
+                let mut target = build_target(request, self.version)?;
+                target.elevation.broker = broker;
                 let applied = lifecycle.apply(&tool, plan_id, &target).await?;
                 // The negotiated version, not this runtime's maximum: a peer is
                 // sent the frame its own version promised (AAASM-5674).
@@ -538,7 +603,8 @@ impl Connection {
                 ));
             }
             DiVerb::Repair => {
-                let target = build_target(request, self.version)?;
+                let mut target = build_target(request, self.version)?;
+                target.elevation.broker = broker;
                 // AAASM-6091: the wire protocol has no `reconcile` field yet
                 // (a `.proto` change, tracked separately from this fail-safe
                 // fix) — every DI-API repair request is treated as the
@@ -550,7 +616,8 @@ impl Connection {
                 response.repair = Some(project::repair_view(&tool, &report, &status));
             }
             DiVerb::Remove => {
-                let target = build_target(request, self.version)?;
+                let mut target = build_target(request, self.version)?;
+                target.elevation.broker = broker;
                 let plan_id = request
                     .remove
                     .as_ref()
