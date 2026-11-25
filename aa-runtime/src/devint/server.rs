@@ -44,7 +44,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use aa_core::integration::{now_unix_secs, IntegrationRequest, ProtectionLevel};
+use aa_core::integration::{now_unix_secs, AuthorizationMethod, ElevationContext, IntegrationRequest, ProtectionLevel};
 use aa_proto::assembly::devint::v1 as wire;
 
 use super::audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
@@ -509,7 +509,7 @@ impl Connection {
             }
             DiVerb::Plan => {
                 let args = request.plan.clone().unwrap_or_default();
-                let integration_request = build_plan_request(&tool, &args)?;
+                let integration_request = build_plan_request(&tool, &args, self.version)?;
                 let plan = lifecycle.plan(integration_request).await?;
                 response.plan = Some(project::plan_view(&plan));
             }
@@ -518,19 +518,19 @@ impl Connection {
                 // The same target the read verbs use, vetted the same way: the
                 // project a plan is executed from has to mean what the project a
                 // plan was authored for meant, or comparing them proves nothing.
-                let target = build_target(request)?;
+                let target = build_target(request, self.version)?;
                 let applied = lifecycle.apply(&tool, plan_id, &target).await?;
                 // The negotiated version, not this runtime's maximum: a peer is
                 // sent the frame its own version promised (AAASM-5674).
                 response.apply = Some(project::apply_view(&applied, self.version));
             }
             DiVerb::Status => {
-                let target = build_target(request)?;
+                let target = build_target(request, self.version)?;
                 let status = lifecycle.status(&tool, &target).await?;
                 response.status = Some(project::status_view(&status));
             }
             DiVerb::Verify => {
-                let target = build_target(request)?;
+                let target = build_target(request, self.version)?;
                 let result = lifecycle.verify(&tool, &target).await?;
                 response.verification = Some(project::verification_view(
                     &result,
@@ -538,7 +538,7 @@ impl Connection {
                 ));
             }
             DiVerb::Repair => {
-                let target = build_target(request)?;
+                let target = build_target(request, self.version)?;
                 // AAASM-6091: the wire protocol has no `reconcile` field yet
                 // (a `.proto` change, tracked separately from this fail-safe
                 // fix) — every DI-API repair request is treated as the
@@ -550,7 +550,7 @@ impl Connection {
                 response.repair = Some(project::repair_view(&tool, &report, &status));
             }
             DiVerb::Remove => {
-                let target = build_target(request)?;
+                let target = build_target(request, self.version)?;
                 let plan_id = request
                     .remove
                     .as_ref()
@@ -594,6 +594,7 @@ impl Connection {
 fn build_plan_request(
     tool: &aa_core::dev_tool::DevToolKind,
     args: &wire::PlanArgs,
+    version: u32,
 ) -> Result<IntegrationRequest, LifecycleError> {
     let profile = project::parse_profile(&args.profile).ok_or_else(|| LifecycleError::Refused {
         detail: format!("unknown protection profile {:?}", args.profile),
@@ -609,7 +610,25 @@ fn build_plan_request(
         })?
     };
 
-    let mut request = IntegrationRequest::new(tool.clone(), profile, scope).requesting_level(requested_level);
+    let authorization_method = parse_authorization_method(&args.authorization_method, version)?;
+    // A connection that can carry a terminal, asked to plan a privileged step
+    // with no stated method, is refused: nothing downstream may pick one
+    // silently (AAASM-6491).
+    if args.allow_privileged_host_steps
+        && scope == aa_core::integration::SettingsScope::Managed
+        && version >= negotiate::DI_API_TERMINAL_ELEVATION_SINCE
+        && authorization_method == AuthorizationMethod::Unstated
+    {
+        return Err(LifecycleError::Refused {
+            detail: "a managed-scope plan with privileged host steps must state how administrator \
+                     authorization is obtained (authorization_method \"terminal\" or \"gui\")"
+                .to_string(),
+        });
+    }
+
+    let mut request = IntegrationRequest::new(tool.clone(), profile, scope)
+        .requesting_level(requested_level)
+        .with_authorization_method(authorization_method);
     request.project_root = parse_project_root(scope, &args.project_root)?;
     request.user_config_home = parse_user_config_home(scope, &args.user_config_home)?;
     request.allow_privileged_host_steps = args.allow_privileged_host_steps;
@@ -637,8 +656,9 @@ fn build_plan_request(
 /// installation that request is answerable. What it cannot reach is a
 /// project-scope receipt — the service refuses there, because an unspecified
 /// target names no project and this daemon's own directory is not a substitute.
-fn build_target(request: &wire::Request) -> Result<LifecycleTarget, LifecycleError> {
+fn build_target(request: &wire::Request, version: u32) -> Result<LifecycleTarget, LifecycleError> {
     let args = request.target.clone().unwrap_or_default();
+    let authorization_method = parse_authorization_method(&args.authorization_method, version)?;
     let scope = if args.settings_scope.is_empty() {
         None
     } else {
@@ -677,7 +697,32 @@ fn build_target(request: &wire::Request) -> Result<LifecycleTarget, LifecycleErr
         // function cannot represent, and collapsing "stated nothing" into
         // `None` here would just be the same case reached two ways.
         caller_env: Some(build_caller_env(&args)),
+        // The channel back to the client is attached per request by the
+        // connection; only the stated method comes from the wire.
+        elevation: ElevationContext::without_broker(authorization_method),
     })
+}
+
+/// Parse a wire `authorization_method`, refusing what this connection could not
+/// have been promised.
+///
+/// An unknown token is refused, never mapped. A stated method below DI-API 8 is
+/// refused too: a pre-v8 client cannot have meant it, and honouring it would
+/// let a peer that never negotiated terminal elevation be sent an elevation
+/// frame it cannot read.
+fn parse_authorization_method(raw: &str, version: u32) -> Result<AuthorizationMethod, LifecycleError> {
+    let method = AuthorizationMethod::parse(raw).map_err(|token| LifecycleError::Refused {
+        detail: format!("unknown authorization method {token:?}"),
+    })?;
+    if method != AuthorizationMethod::Unstated && version < negotiate::DI_API_TERMINAL_ELEVATION_SINCE {
+        return Err(LifecycleError::Refused {
+            detail: format!(
+                "authorization_method needs DI-API {} or newer",
+                negotiate::DI_API_TERMINAL_ELEVATION_SINCE
+            ),
+        });
+    }
+    Ok(method)
 }
 
 /// Reconstruct a [`CallerEnvironment`] from the two name lists on the wire.

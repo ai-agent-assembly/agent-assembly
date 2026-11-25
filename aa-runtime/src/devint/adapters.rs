@@ -199,6 +199,14 @@ impl StepExecutorFactory for ClaudeCodeSteps {
         // user-scoped one.
         Box::new(self.0.scoped_executor(rendered))
     }
+
+    fn executor_elevated(
+        &self,
+        rendered: BTreeMap<String, String>,
+        elevation: &aa_core::integration::ElevationContext,
+    ) -> Box<dyn StepExecutor + Send> {
+        Box::new(self.0.scoped_executor_elevated(rendered, elevation))
+    }
 }
 
 /// A `Box<dyn DevToolAdapter>` that is itself a `DevToolAdapter`.
