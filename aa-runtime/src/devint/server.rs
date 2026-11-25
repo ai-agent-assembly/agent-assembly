@@ -286,7 +286,7 @@ async fn serve_connection(
         DiFrame::Hello(hello) => hello,
         // A verb before negotiation is refused outright: serving it would mean
         // serving a client whose version we never agreed.
-        DiFrame::Request(_) => {
+        DiFrame::Request(_) | DiFrame::ElevationResult(_) => {
             services.audit.record(DevIntAuditEvent::new(
                 now_unix_secs(),
                 connection_id,
@@ -369,6 +369,18 @@ async fn serve_connection(
                     code: wire::DenyCode::ProtocolViolation as i32,
                     message: "the DI-API version is fixed for the life of a connection".to_string(),
                     remediation: "open a new connection to negotiate a different version".to_string(),
+                })
+            }
+            // An elevation result is only meaningful as the answer to a request
+            // this runtime sent while serving a verb; arriving here, nothing
+            // asked for it.
+            DiFrame::ElevationResult(_) => {
+                connection.audit_protocol_failure("unsolicited_elevation_result");
+                DiResponseFrame::Denied(wire::Denied {
+                    request_id: 0,
+                    code: wire::DenyCode::ProtocolViolation as i32,
+                    message: "an elevation result arrived with no elevation request in flight".to_string(),
+                    remediation: "send an elevation result only in answer to an elevation request".to_string(),
                 })
             }
         };
