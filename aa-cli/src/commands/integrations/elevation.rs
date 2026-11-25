@@ -1671,7 +1671,7 @@ mod tests {
 for a in "$@"; do printf 'ARG:%s\n' "$a" >> '{rec}'; done
 echo CALL_END >> '{rec}'
 case "$1" in
-  -v) if [ -e '{slow_v}' ]; then sleep 1; fi; exit 0 ;;
+  -v) if [ -e '{slow_v}' ]; then sleep 3; fi; exit 0 ;;
   -k) exit 0 ;;
 esac
 shift
@@ -1682,7 +1682,7 @@ for a in "$@"; do penult=$last; last=$a; done
 case "$cmd" in
   /usr/bin/tee)
     cat > "$last" || exit 1
-    if [ -e '{slow_tee}' ]; then sleep 1; fi
+    if [ -e '{slow_tee}' ]; then sleep 3; fi
     exit 0 ;;
   /usr/bin/install)
     if [ "$1" = "-d" ]; then mkdir -p "$last"; exit $?; fi
@@ -1800,7 +1800,9 @@ esac
         let target = scratch.path().join("ClaudeCode").join("managed-settings.json");
         let paths = Paths::new(stub.to_str().unwrap(), target.to_str().unwrap());
         let mut elevator = Elevator::new(Mode::Install, None, new_record());
-        elevator.budget = Duration::from_millis(400);
+        // The sleeping step outlasts the budget by 1.5 s, and the steps before it
+        // take milliseconds, so a loaded machine cannot expire the budget early.
+        elevator.budget = Duration::from_millis(1500);
         elevator.begin();
         let outcome = elevator.place(&paths, "body");
         (scratch, record, target, outcome)
