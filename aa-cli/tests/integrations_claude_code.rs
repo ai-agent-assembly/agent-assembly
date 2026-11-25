@@ -94,6 +94,34 @@ fn registration(recording: &Arc<FakeAuthority>) -> aa_runtime::devint::Registere
     ))
 }
 
+/// Read a pty master until the slave side is gone (EOF or EIO) or `limit`
+/// passes. The master is non-blocking-polled so the bound is real.
+fn drain_pty(master: &mut std::fs::File, limit: std::time::Duration) {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    let end = std::time::Instant::now() + limit;
+    let mut buf = [0u8; 1024];
+    while std::time::Instant::now() < end {
+        let mut pfd = libc::pollfd {
+            fd: master.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `pfd` is a valid pollfd for the call. (poll is fine on a pty
+        // master; it is only the slave /dev/tty that macOS reports POLLNVAL for.)
+        let ready = unsafe { libc::poll(&mut pfd, 1, 100) };
+        if ready < 0 {
+            break;
+        }
+        if ready > 0 {
+            match master.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    }
+}
+
 /// What a pseudo-terminal child is told, see [`Harness::aasm_scripted`].
 struct PtyScript {
     stdin_on_tty: bool,
@@ -205,6 +233,7 @@ impl Harness {
         }
         assert!(socket.exists(), "the test server never bound its socket");
 
+        let cli_socket = std::sync::Mutex::new(socket.clone());
         Self {
             _env_guard,
             dir,
@@ -213,7 +242,7 @@ impl Harness {
             shutdown,
             server: Some(handle),
             recording,
-            cli_socket: std::sync::Mutex::new(socket.clone()),
+            cli_socket,
         }
     }
 
@@ -1490,9 +1519,12 @@ exit 1
                         }
                         std::thread::sleep(std::time::Duration::from_millis(50));
                     }
-                    // Keep the master open until the child is done with it.
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                    drop(master);
+                    // Keep the master open until the child is done with it, and
+                    // *read* it meanwhile: what the line discipline echoes back
+                    // sits in the master's queue, and a child whose controlling
+                    // terminal still holds unread output cannot finish exiting
+                    // on macOS. Bounded, so a stuck child is a failure, not a hang.
+                    drain_pty(&mut master, std::time::Duration::from_secs(60));
                 });
                 (child, Some(typist))
             }
