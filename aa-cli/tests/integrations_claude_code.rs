@@ -1736,7 +1736,7 @@ fn gui_authorization_is_reached_only_when_asked_for_by_name() {
         message.contains("authorization: macOS dialog (--admin-auth gui)"),
         "{message}"
     );
-    assert!(h.recording.calls().len() >= 1, "the GUI authority was never reached");
+    assert!(!h.recording.calls().is_empty(), "the GUI authority was never reached");
     assert!(
         h.stub_calls().is_empty(),
         "terminal authorization must not run under gui"
