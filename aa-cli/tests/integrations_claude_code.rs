@@ -1762,6 +1762,25 @@ fn planning_and_the_default_flow_never_reach_the_dialog_authority() {
     assert_eq!(h.recording.calls().len(), 0, "planning must not elevate");
 }
 
+#[test]
+fn the_cli_owns_copies_of_the_managed_identifiers_that_equal_the_adapters() {
+    // The published CLI cannot import these from the held-back adapter, so it
+    // keeps its own; this test (stripped with the adapter) keeps them honest.
+    use aa_cli::commands::integrations::elevation as cli;
+    assert_eq!(
+        cli::MANAGED_SETTINGS_PATH,
+        aa_devtool_claude_code::MANAGED_SETTINGS_PATH
+    );
+    assert_eq!(
+        cli::MANAGED_SETTINGS_FILE,
+        aa_devtool_claude_code::managed_settings::MANAGED_SETTINGS_FILE
+    );
+    assert_eq!(
+        cli::STEP_ENDPOINT_MANAGED_SETTINGS,
+        aa_devtool_claude_code::lifecycle::STEP_ENDPOINT_MANAGED_SETTINGS
+    );
+}
+
 /// `osascript` has exactly one home: the GUI authority. If another source file
 /// grows a reference, a code path outside the explicit `--admin-auth gui`
 /// choice may have learned to raise the dialog.

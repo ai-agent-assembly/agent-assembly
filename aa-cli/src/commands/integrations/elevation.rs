@@ -58,8 +58,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use aa_core::integration::{sha256_hex, ElevationOutcome};
-use aa_devtool_claude_code::managed_settings::MANAGED_SETTINGS_FILE;
-use aa_devtool_claude_code::MANAGED_SETTINGS_PATH;
 use aa_proto::assembly::devint::v1 as wire;
 use aa_runtime::devint::elevation::CLIENT_ELEVATION_BUDGET;
 use aa_runtime::devint::ElevationHandler;
@@ -118,6 +116,23 @@ impl AdminAuthArg {
 }
 
 // ── where things are ────────────────────────────────────────────────────────
+
+/// The managed-settings file name.
+///
+/// The CLI owns its own copy of the three managed-settings identifiers rather
+/// than importing them from the claude-code adapter: the adapter crate is held
+/// back from publication, and this module ships in the published CLI. The
+/// target of an elevation is this constant, never a value the runtime sends.
+/// `tests/integrations_claude_code.rs` (stripped together with the adapter)
+/// asserts these equal the adapter's, so the copies cannot drift unnoticed.
+pub const MANAGED_SETTINGS_FILE: &str = "managed-settings.json";
+
+/// The one path an elevation may ever write. A security boundary, not a default.
+pub const MANAGED_SETTINGS_PATH: &str = "/Library/Application Support/ClaudeCode/managed-settings.json";
+
+/// The id of the plan step that writes the managed-settings file, which selects
+/// the digest the operator reviewed.
+pub const STEP_ENDPOINT_MANAGED_SETTINGS: &str = "endpoint-managed-settings";
 
 /// The managed-settings file this invocation means: the canonical constant, or
 /// the redirected root's file when the test seam's root is set.
