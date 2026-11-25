@@ -223,7 +223,9 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
         // moments ago — same process, same rule (`Target::here`) — so the
         // service's comparison passes for the caller who authored the plan and
         // fails for one presenting it from somewhere else.
-        let wants_authorization = !plan.required_permissions.is_empty() && args.install_managed_settings;
+        // The same condition the plan used to state the method, so the apply
+        // always states what was reviewed.
+        let wants_authorization = args.install_managed_settings;
         let record = elevation::new_record();
         if wants_authorization && matches!(args.admin_auth, AdminAuthArg::Terminal) {
             session

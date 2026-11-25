@@ -143,13 +143,32 @@ pub fn drop_argv(sudo: &str) -> Vec<OsString> {
     [sudo, "-k"].iter().map(OsString::from).collect()
 }
 
+/// The method to state on a request that may elevate.
+///
+/// Stated when the caller already knows a privileged step is involved, and
+/// otherwise whenever the connection can carry one (DI-API 8), so a removal or
+/// repair that turns out to reach the managed file is never left with a runtime
+/// that has been told nothing — at v8 that is refused, not defaulted. Below v8
+/// and with nothing privileged in sight it stays empty, which keeps every
+/// ordinary command working against an older runtime.
+pub fn method_to_send(admin: AdminAuthArg, likely_privileged: bool, negotiated_version: u32) -> &'static str {
+    if likely_privileged || negotiated_version >= aa_runtime::devint::DI_API_TERMINAL_ELEVATION_SINCE {
+        admin.as_wire()
+    } else {
+        ""
+    }
+}
+
 // ── preflight ───────────────────────────────────────────────────────────────
 
 /// What a host can offer, gathered once so the decision is a pure function.
 #[derive(Debug, Clone, Copy)]
 pub struct Facts {
+    /// Whether this host is macOS, the only platform with a managed-settings path.
     pub is_macos: bool,
+    /// Whether the `sudo` in use is a regular file owned by root.
     pub sudo_is_root_owned_regular_file: bool,
+    /// Whether `/dev/tty` opens read-write, i.e. there is a controlling terminal.
     pub tty_opens: bool,
 }
 
@@ -345,8 +364,12 @@ fn run(argv: &[OsString]) -> Result<Ran, String> {
         .spawn()
         .map_err(|e| format!("{} could not be started: {e}", program.to_string_lossy()))?;
     let mut captured = Vec::new();
-    if let Some(stderr) = child.stderr.take() {
-        let _ = stderr.take(STDERR_CAP as u64).read_to_end(&mut captured);
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = (&mut stderr).take(STDERR_CAP as u64).read_to_end(&mut captured);
+        // Past the cap, keep draining into the void: a child that writes more
+        // than the pipe holds would otherwise block forever on a reader that
+        // stopped reading, and `wait` below would never return.
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
     }
     let status = child.wait().map_err(|e| format!("waiting for sudo failed: {e}"))?;
     Ok(Ran {

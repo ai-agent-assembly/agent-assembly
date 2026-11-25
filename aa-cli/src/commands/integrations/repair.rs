@@ -241,14 +241,16 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
         )?;
 
         let record = elevation::new_record();
-        if privileged && matches!(args.admin_auth, AdminAuthArg::Terminal) {
+        let version = session.client.negotiated().di_api_version;
+        let method = elevation::method_to_send(args.admin_auth, privileged, version);
+        if !method.is_empty() && matches!(args.admin_auth, AdminAuthArg::Terminal) {
             session.client.set_elevation_handler(
                 Elevator::new(None, record.clone())
                     .asking_when_unreviewed()
                     .into_handler(),
             );
         }
-        let target = target.with_authorization_method(if privileged { args.admin_auth.as_wire() } else { "" });
+        let target = target.with_authorization_method(method);
         let view = session
             .client
             .repair(&args.tool, target.as_request())
