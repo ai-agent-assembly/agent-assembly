@@ -1929,6 +1929,140 @@ esac
         ok("-k", run(&drop_argv(sudo), None));
     }
 
+    // ── the real /dev/tty ───────────────────────────────────────────────────
+    //
+    // The tests above read a pipe or a pty slave opened by name. These run the
+    // read in a child that has the pty as its *controlling terminal* and opens
+    // `/dev/tty`, which is what `confirm_on_tty` does.
+
+    /// The child half. It is an ordinary test that returns at once unless the
+    /// parent test set `AASM_TTY_PROBE`; the parent asserts on what it prints.
+    #[test]
+    fn tty_probe_child() {
+        let Ok(case) = std::env::var("AASM_TTY_PROBE") else {
+            return;
+        };
+        use std::os::fd::AsRawFd;
+        let tty = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+            .expect("the probe child must have a controlling terminal");
+        let started = Instant::now();
+        let answer = read_answer_with_deadline(tty.as_raw_fd(), Some(started + Duration::from_millis(600)));
+        println!(
+            "PROBE case={case} answer={answer:?} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+    }
+
+    /// Run `tty_probe_child` under a controlling pty, having typed `typed` into
+    /// it. `None` when this host has no pty, after saying so.
+    fn run_tty_probe(case: &str, typed: &str) -> Option<String> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+        // SAFETY: each call is checked; descriptors are wrapped in `OwnedFd`.
+        let (master, slave) = unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            if master < 0 {
+                println!("SKIP [{case}]: posix_openpt is unavailable on this host");
+                return None;
+            }
+            let master = OwnedFd::from_raw_fd(master);
+            assert_eq!(libc::grantpt(master.as_raw_fd()), 0);
+            assert_eq!(libc::unlockpt(master.as_raw_fd()), 0);
+            let name = libc::ptsname(master.as_raw_fd());
+            assert!(!name.is_null());
+            let slave = libc::open(name, libc::O_RDWR | libc::O_NOCTTY);
+            assert!(slave >= 0);
+            (master, OwnedFd::from_raw_fd(slave))
+        };
+        let slave_fd = slave.as_raw_fd();
+        let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
+        command
+            .args([
+                "--exact",
+                "commands::integrations::elevation::tests::tty_probe_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("AASM_TTY_PROBE", case)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        // SAFETY: between fork and exec; only async-signal-safe calls.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = command.spawn().expect("spawn the probe child");
+        drop(slave);
+        let mut master = std::fs::File::from(master);
+        if !typed.is_empty() {
+            master.write_all(typed.as_bytes()).expect("type into the pty");
+        }
+        let output = child.wait_with_output().expect("wait for the probe child");
+        drop(master);
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(
+            text.contains("PROBE case="),
+            "the probe child did not report: stdout={text} stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Some(text)
+    }
+
+    #[test]
+    fn dev_tty_with_no_answer_times_out_at_the_deadline() {
+        let Some(text) = run_tty_probe("timeout", "") else {
+            return;
+        };
+        assert!(text.contains("answer=None"), "{text}");
+        let elapsed: u128 = text
+            .split("elapsed_ms=")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .expect("elapsed");
+        assert!(
+            (500..5_000).contains(&elapsed),
+            "the wait must end at the deadline, not before and not never: {elapsed} ms"
+        );
+    }
+
+    #[test]
+    fn dev_tty_typed_answer_is_read() {
+        let Some(text) = run_tty_probe("typed", "y\n") else {
+            return;
+        };
+        assert!(text.contains("answer=Some(\"y\")"), "{text}");
+    }
+
+    #[test]
+    fn dev_tty_end_of_file_at_line_start_is_no() {
+        let Some(text) = run_tty_probe("eof", "\u{4}") else {
+            return;
+        };
+        assert!(text.contains("answer=None"), "{text}");
+        let elapsed: u128 = text
+            .split("elapsed_ms=")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .expect("elapsed");
+        assert!(
+            elapsed < 500,
+            "^D must answer at once, not wait for the deadline: {elapsed} ms"
+        );
+    }
+
     #[test]
     fn a_partial_line_at_end_of_input_is_the_answer() {
         let mut fds = [0 as libc::c_int; 2];
