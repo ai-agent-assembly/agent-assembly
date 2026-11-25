@@ -84,7 +84,14 @@ pub const DI_API_MIN_SUPPORTED: u32 = 1;
 /// version later, for the User-scope destination rather than the Project one
 /// (AAASM-5957). The reasoning above for why the gate lives at the call site
 /// applies unchanged.
-pub const DI_API_MAX_SUPPORTED: u32 = 7;
+///
+/// v8 adds terminal-first administrator authorization
+/// ([`DI_API_TERMINAL_ELEVATION_SINCE`], AAASM-6491): `PlanArgs`/`TargetArgs`
+/// gained `authorization_method` and the runtime may send an elevation request
+/// frame back on the connection. It is gated by comparing versions before the
+/// request is sent, for the same reason v6 and v7 are: a v7 runtime drops the
+/// field and opens the macOS GUI dialog with no signal.
+pub const DI_API_MAX_SUPPORTED: u32 = 8;
 
 /// The first DI-API version whose `status` and `verify` carry a policy posture.
 ///
@@ -152,6 +159,16 @@ pub const DI_API_PROJECT_ROOT_SINCE: u32 = 6;
 /// installation that exists" and may turn out to be User-scoped) rather than
 /// send the field and hope (AAASM-5957).
 pub const DI_API_USER_CONFIG_HOME_SINCE: u32 = 7;
+
+/// The first DI-API version that carries `authorization_method` and may send an
+/// elevation request frame (AAASM-6491).
+///
+/// Below this, a client asking for terminal authorization would have the field
+/// silently dropped by the runtime, which would then raise the macOS GUI dialog
+/// from a detached process — the exact outcome terminal-first authorization
+/// exists to prevent. So a client refuses terminal mode below this version, and
+/// a runtime never sends the elevation frame to a connection below it.
+pub const DI_API_TERMINAL_ELEVATION_SINCE: u32 = 8;
 
 /// Verbs that did not exist at DI-API v1.
 ///
@@ -480,13 +497,13 @@ mod tests {
 
     #[test]
     fn a_client_newer_than_the_runtime_is_told_to_update_the_runtime() {
-        // AAASM-5957 raised DI_API_MAX_SUPPORTED to 7; [7, 8] would now
+        // AAASM-6491 raised DI_API_MAX_SUPPORTED to 8; [8, 9] would now
         // straddle the window rather than sit entirely above it.
-        let outcome = negotiate(&hello(&[8, 9]));
+        let outcome = negotiate(&hello(&[9, 10]));
         let Negotiation::Incompatible(error) = &outcome else {
             panic!("expected Incompatible, got {outcome:?}");
         };
-        assert_eq!(*error, NegotiationError::AboveCeiling { client_lowest: 8 });
+        assert_eq!(*error, NegotiationError::AboveCeiling { client_lowest: 9 });
         let incompatible = to_wire(&outcome, &RuntimeProvenance::detect()).expect_err("incompatible");
         assert!(incompatible.remediation.contains("runtime"));
     }

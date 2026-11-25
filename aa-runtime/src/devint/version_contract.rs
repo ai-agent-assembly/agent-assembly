@@ -56,7 +56,7 @@ use super::apply_outcome::{ApplyMutation, MutationUnknown};
 use super::client::{ClientError, DevIntClient, PlanRequest, TargetRequest};
 use super::negotiate::{
     DI_API_APPLY_OUTCOME_SINCE, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_POLICY_POSTURE_SINCE,
-    DI_API_PROJECT_ROOT_SINCE, DI_API_PROVENANCE_SINCE, DI_API_USER_CONFIG_HOME_SINCE,
+    DI_API_PROJECT_ROOT_SINCE, DI_API_PROVENANCE_SINCE, DI_API_TERMINAL_ELEVATION_SINCE, DI_API_USER_CONFIG_HOME_SINCE,
 };
 use super::provenance::ProvenanceVerdict;
 use super::scope::{TokenScope, ToolScope};
@@ -727,11 +727,14 @@ async fn an_unparseable_scope_token_is_refused_by_the_server_not_the_version_gat
 /// for a test run.
 const _: () = {
     assert!(DI_API_PROVENANCE_SINCE >= DI_API_MIN_SUPPORTED);
-    // The user configuration home is the newest addition (AAASM-5957). If it
-    // stops being so, the v7 sweeps above are pinning the wrong version and
-    // their "below this it is refused" loops silently stop covering the top
-    // of the window.
-    assert!(DI_API_USER_CONFIG_HOME_SINCE == DI_API_MAX_SUPPORTED);
+    // Terminal elevation is the newest addition (AAASM-6491). If it stops being
+    // so, the v8 sweeps are pinning the wrong version and their "below this it
+    // is refused" loops silently stop covering the top of the window.
+    assert!(DI_API_TERMINAL_ELEVATION_SINCE == DI_API_MAX_SUPPORTED);
+    // The user configuration home was the newest addition until v8
+    // (AAASM-6491), so its sweeps run over a strict interior of the window.
+    assert!(DI_API_USER_CONFIG_HOME_SINCE < DI_API_TERMINAL_ELEVATION_SINCE);
+    assert!(DI_API_TERMINAL_ELEVATION_SINCE > DI_API_MIN_SUPPORTED);
     // The project root was the newest addition until v7 (AAASM-5957), so its
     // sweeps now run over a strict interior of the window rather than up to
     // its top — as provenance's already did after AAASM-5674, and apply
