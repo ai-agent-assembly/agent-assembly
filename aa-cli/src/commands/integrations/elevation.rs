@@ -271,8 +271,45 @@ pub fn method_to_send(admin: AdminAuthArg, likely_privileged: bool, negotiated_v
     }
 }
 
-/// True when any label names nothing, so the managed file cannot be positively
-/// ruled out as part of the operation.
+/// Action kinds (the runtime's stable tokens) that are known never to write the
+/// root-owned managed file. Anything not listed — including `unknown`, which a
+/// newer runtime reports for an action this build cannot name — is undetermined.
+const NON_MANAGED_KINDS: [&str; 11] = [
+    "install_hook",
+    "remove_hook",
+    "configure_model_gateway_base_url",
+    "configure_proxy",
+    "materialise_trust_material",
+    "inject_launch_environment",
+    "configure_mcp_servers",
+    "register_ide_client",
+    "connect_local_runtime",
+    "run_protection_test",
+    "manage_artifact",
+];
+
+/// Whether a plan step may touch the managed-settings file, judged from what the
+/// step says about itself rather than from its paths: several unprivileged steps
+/// legitimately carry no path (proxy, MCP, launch environment…), while the legacy
+/// managed-settings step is managed yet also carries none. Fail closed on a kind
+/// this build does not recognise.
+pub fn step_may_touch_managed(action_kind: &str, privilege: &str, settings_scope: &str) -> bool {
+    privilege == "privileged_host" || settings_scope == "managed" || !NON_MANAGED_KINDS.contains(&action_kind)
+}
+
+/// Whether `path` exists, without following a final symlink (a dangling link is
+/// "there"). Any error other than `NotFound` is unknown state, not absence.
+fn entry_exists(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("{} cannot be inspected: {e}", path.display())),
+    }
+}
+
+/// True when any label is blank. Used for repair drift labels, which are file
+/// paths or `path#key`: a blank one is a malformed label, not a legitimate
+/// path-less step (repair has no step kinds to judge by), so it fails closed.
 pub fn any_unnamed<'a>(labels: impl IntoIterator<Item = &'a str>) -> bool {
     labels.into_iter().any(|l| l.trim().is_empty())
 }
@@ -915,7 +952,11 @@ impl Elevator {
         // one is not touched at all — `install -d` would rewrite its mode and
         // group — and is instead checked, without privilege, before anything is
         // placed in it.
-        let existed = Path::new(&paths.dir).exists();
+        let existed = match entry_exists(Path::new(&paths.dir)) {
+            Ok(existed) => existed,
+            // Unknown state: neither create nor later remove anything.
+            Err(why) => return O::Unavailable(why),
+        };
         if existed {
             if let Err(why) = check_managed_dir(Path::new(&paths.dir), paths.sudo == SUDO) {
                 return O::Unavailable(why);
@@ -932,7 +973,8 @@ impl Elevator {
         // The temporary goes on every path, success included; a leftover is
         // reported, never papered over.
         let _ = run(&remove_argv(&paths.sudo, &paths.tmp), None);
-        let leftover = Path::new(&paths.tmp).exists();
+        // Unknown (cannot be inspected) counts as still there.
+        let leftover = entry_exists(Path::new(&paths.tmp)).unwrap_or(true);
         if outcome != O::Completed && created_dir {
             // Only a directory this run created, and `rmdir` refuses a non-empty one.
             let _ = run(&rmdir_argv(&paths.sudo, &paths.dir), None);
@@ -1628,20 +1670,26 @@ mod tests {
             r#"#!/bin/sh
 for a in "$@"; do printf 'ARG:%s\n' "$a" >> '{rec}'; done
 echo CALL_END >> '{rec}'
-case "$1" in -v) [ -e '{slow_v}' ] && sleep 1; exit 0 ;; -k) exit 0 ;; esac
+case "$1" in
+  -v) if [ -e '{slow_v}' ]; then sleep 1; fi; exit 0 ;;
+  -k) exit 0 ;;
+esac
 shift
-[ "$1" = "--" ] && shift
+if [ "$1" = "--" ]; then shift; fi
 cmd=$1; shift
 last=; penult=
 for a in "$@"; do penult=$last; last=$a; done
 case "$cmd" in
-  /usr/bin/tee) cat > "$last"; [ -e '{slow_tee}' ] && sleep 1 ;;
+  /usr/bin/tee)
+    cat > "$last" || exit 1
+    if [ -e '{slow_tee}' ]; then sleep 1; fi
+    exit 0 ;;
   /usr/bin/install)
-    if [ "$1" = "-d" ]; then mkdir -p "$last"; exit 0; fi
-    [ -e '{fail}' ] && exit 1
-    cp "$penult" "$last" ;;
-  /bin/rm) rm -f "$last" ;;
-  /bin/rmdir) rmdir "$last" ;;
+    if [ "$1" = "-d" ]; then mkdir -p "$last"; exit $?; fi
+    if [ -e '{fail}' ]; then exit 1; fi
+    cp "$penult" "$last"; exit $? ;;
+  /bin/rm) rm -f "$last"; exit $? ;;
+  /bin/rmdir) rmdir "$last"; exit $? ;;
   *) exit 1 ;;
 esac
 "#,
@@ -1807,6 +1855,62 @@ esac
     }
 
     #[test]
+    fn steps_are_judged_by_kind_privilege_and_scope_not_by_paths() {
+        // Legitimately path-less, unprivileged kinds are not managed.
+        for kind in [
+            "configure_proxy",
+            "configure_mcp_servers",
+            "inject_launch_environment",
+            "register_ide_client",
+            "run_protection_test",
+            "configure_model_gateway_base_url",
+        ] {
+            assert!(!step_may_touch_managed(kind, "user", ""), "{kind}");
+        }
+        // The legacy managed step carries no path yet is managed.
+        assert!(step_may_touch_managed("apply_legacy_managed_settings", "user", ""));
+        assert!(step_may_touch_managed(
+            "write_managed_settings",
+            "privileged_host",
+            "managed"
+        ));
+        assert!(step_may_touch_managed("install_hook", "privileged_host", ""));
+        assert!(step_may_touch_managed("install_hook", "user", "managed"));
+        // Unrecognised kinds fail closed.
+        assert!(step_may_touch_managed("unknown", "user", ""));
+        assert!(step_may_touch_managed("some_future_kind", "user", ""));
+        assert!(step_may_touch_managed("", "user", ""));
+    }
+
+    #[test]
+    fn every_branch_of_the_stub_exits_zero_without_markers() {
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let record = scratch.path().join("record");
+        let stub = write_stub(scratch.path(), &record);
+        let sudo = stub.to_str().unwrap();
+        let dir = scratch.path().join("managed");
+        let tmp = dir.join("tmp");
+        let target = dir.join("target");
+        let (dir_s, tmp_s, target_s) = (dir.to_str().unwrap(), tmp.to_str().unwrap(), target.to_str().unwrap());
+
+        let ok = |what: &str, ran: Result<Ran, String>| {
+            let ran = ran.unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert!(ran.success, "{what} must exit 0");
+        };
+        ok("-v", run(&auth_argv(sudo, target_s, "place"), None));
+        ok("install -d", run(&mkdir_argv(sudo, dir_s), None));
+        ok("tee", run(&tee_argv(sudo, tmp_s), Some(b"body")));
+        assert_eq!(std::fs::read_to_string(&tmp).unwrap(), "body");
+        ok("install", run(&install_argv(sudo, tmp_s, target_s), None));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "body");
+        ok("rm", run(&remove_argv(sudo, tmp_s), None));
+        ok("rm of an absent file", run(&remove_argv(sudo, tmp_s), None));
+        ok("rm target", run(&remove_argv(sudo, target_s), None));
+        ok("rmdir", run(&rmdir_argv(sudo, dir_s), None));
+        ok("-k", run(&drop_argv(sudo), None));
+    }
+
+    #[test]
     fn a_partial_line_at_end_of_input_is_the_answer() {
         let mut fds = [0 as libc::c_int; 2];
         // SAFETY: `pipe` fills two valid descriptors on success.
@@ -1826,8 +1930,10 @@ esac
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_tty_device_times_out_and_reads_through_select() {
-        // The case poll(2) gets wrong on macOS: a real tty descriptor.
+    fn a_pty_slave_times_out_and_reads_through_select() {
+        // A real tty device node (poll(2) reports POLLNVAL for these on macOS).
+        // It is opened by name, not as the controlling terminal, so the /dev/tty
+        // open itself is not exercised here (a known gap, not a claim).
         // SAFETY: standard pty setup; every descriptor is closed below.
         unsafe {
             let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
