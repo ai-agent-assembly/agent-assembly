@@ -1486,6 +1486,9 @@ exit 1
                 let path = entry.path();
                 if path.is_dir() {
                     walk(&path, out);
+                } else if path.file_name().is_some_and(|n| n == "sudo-stub.sh") {
+                    // The stand-in for sudo's own password check holds the password
+                    // by construction; it is the test's verifier, not product output.
                 } else if let Ok(text) = std::fs::read_to_string(&path) {
                     out.push_str(&text);
                 }

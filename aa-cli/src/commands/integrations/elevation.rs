@@ -1822,7 +1822,9 @@ esac
         assert!(matches!(outcome, O::Cancelled(_)), "{outcome:?}");
         assert!(!target.exists(), "install must not run once time is up");
         let seen = std::fs::read_to_string(&record).expect("record");
-        assert!(seen.contains("/usr/bin/tee") && !seen.contains("ARG:-m"), "{seen}");
+        // `install -d -m 755` is the directory step; the placing `install` is the
+        // one that carries mode 644.
+        assert!(seen.contains("/usr/bin/tee") && !seen.contains("ARG:644"), "{seen}");
         assert!(seen.contains("/bin/rm"), "the temporary is still removed: {seen}");
         assert!(leftover_tmps(&scratch.path().join("ClaudeCode")).is_empty());
         assert!(seen.trim_end().ends_with("ARG:-k\nCALL_END"), "{seen}");
