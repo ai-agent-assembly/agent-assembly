@@ -76,9 +76,11 @@ use aa_devtool_contract::{
     SupportedToolVersions, ToolVersion, VerificationOutcome, VerificationResult, VersionCompatibility, VersionSupport,
     DEFAULT_FRESHNESS_WINDOW_SECS, LIFECYCLE_SCHEMA_VERSION,
 };
+use aa_devtool_contract::{AuthorizationMethod, ElevationContext};
 use async_trait::async_trait;
 
 use crate::adjudicating_probe::ProxyAdjudicatedProbe;
+use crate::brokered_authority::BrokeredAuthority;
 use crate::bypass::{self, BypassFinding};
 use crate::executor::ClaudeCodeStepExecutor;
 use crate::managed_settings::{
@@ -224,15 +226,65 @@ impl ClaudeCodeIntegration {
     /// anchored to whatever this process writes as — live in both cases rather
     /// than disabled in one.
     pub fn managed_installer(&self) -> Option<Arc<ManagedSettingsInstaller>> {
+        self.managed_installer_for(&ElevationContext::default(), false)
+    }
+
+    /// As [`managed_installer`](Self::managed_installer), elevating through the
+    /// authority `elevation` selects (AAASM-6491).
+    ///
+    /// `planning` is true only while authoring a plan, where nothing is elevated
+    /// and a terminal method has no channel yet: the authority then only has to
+    /// *describe* itself truthfully.
+    pub fn managed_installer_for(
+        &self,
+        elevation: &ElevationContext,
+        planning: bool,
+    ) -> Option<Arc<ManagedSettingsInstaller>> {
         let target = self.paths.settings_path(SettingsScope::Managed).ok()?;
         let work_dir = self.paths.owned_root(SettingsScope::Managed).ok()?.join("managed");
-        let installer = ManagedSettingsInstaller::new(target, &work_dir, self.managed_authority.clone());
+        let authority = self.authority_for(elevation, planning, &target);
+        let installer = ManagedSettingsInstaller::new(target, &work_dir, authority);
         if self.paths.managed_root_is_canonical() {
             return Some(Arc::new(installer));
         }
         std::fs::create_dir_all(&work_dir).ok()?;
         let uid = managed_settings::owner_uid(&work_dir)?;
         Some(Arc::new(installer.expecting_owner_uid(uid)))
+    }
+
+    /// Choose the authority for one request.
+    ///
+    /// The macOS GUI authority is the default only for a request that states no
+    /// method *on a connection that cannot carry a terminal* (a pre-DI-API-8
+    /// client). A connection that can carry one and still states nothing is
+    /// refused rather than defaulted: silently falling back to a dialog raised
+    /// from a detached process is exactly what terminal-first authorization
+    /// replaces.
+    fn authority_for(
+        &self,
+        elevation: &ElevationContext,
+        planning: bool,
+        target: &Path,
+    ) -> Arc<dyn PrivilegedFileAuthority> {
+        match (elevation.method, &elevation.broker) {
+            (AuthorizationMethod::Terminal, Some(broker)) => Arc::new(BrokeredAuthority::new(broker.clone(), target)),
+            (AuthorizationMethod::Terminal, None) if planning => Arc::new(BrokeredAuthority::disclosure_only(target)),
+            (AuthorizationMethod::Terminal, None) => Arc::new(BrokeredAuthority::without_channel(target)),
+            (AuthorizationMethod::Unstated, Some(_)) => Arc::new(BrokeredAuthority::refusing(
+                target,
+                "the request did not state how administrator authorization is to be obtained; \
+                 pass --admin-auth terminal (or gui)",
+            )),
+            (AuthorizationMethod::Gui, _) | (AuthorizationMethod::Unstated, None) => self.managed_authority.clone(),
+        }
+    }
+
+    /// Whether a prompt could be raised under `method`, read without raising one.
+    fn availability_for(&self, method: AuthorizationMethod) -> Authorization {
+        match method {
+            AuthorizationMethod::Terminal => BrokeredAuthority::disclosure_only("").availability(),
+            AuthorizationMethod::Gui | AuthorizationMethod::Unstated => self.managed_authority.availability(),
+        }
     }
 
     /// Add the one privileged step, plus the warnings that make consenting to it
@@ -246,6 +298,7 @@ impl ClaudeCodeIntegration {
         plan: IntegrationPlan,
         profile: ProtectionProfile,
         path: &std::path::Path,
+        method: AuthorizationMethod,
     ) -> Result<IntegrationPlan, AdapterError> {
         let document = managed_settings::managed_settings_document(profile)?;
         // The disclosure the owner's model requires — path, reason, content,
@@ -255,7 +308,7 @@ impl ClaudeCodeIntegration {
         // decorative: an authorization granted without the diff and the conflict
         // in front of the user is not informed consent.
         let disclosure = self
-            .managed_installer()
+            .managed_installer_for(&ElevationContext::without_broker(method), true)
             .map(|installer| installer.disclose(&document))
             .transpose()
             .map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
@@ -279,11 +332,19 @@ impl ClaudeCodeIntegration {
                         path.display()
                     ),
                 )
-                .privileged(format!(
-                    "Agent Assembly will ask for administrator authorization once, to place one file at {}. \
-                     Nothing else runs with elevated privileges. Removing the integration reverses it.",
-                    path.display()
-                ))
+                .privileged(match method {
+                    AuthorizationMethod::Terminal => format!(
+                        "You will be asked for your password by sudo in this terminal, once, to place one \
+                         root-owned file at {}. Nothing else runs with elevated privileges; aasm and the \
+                         runtime are not elevated. Removing the integration reverses it.",
+                        path.display()
+                    ),
+                    AuthorizationMethod::Gui | AuthorizationMethod::Unstated => format!(
+                        "Agent Assembly will ask for administrator authorization once, to place one file at {}. \
+                         Nothing else runs with elevated privileges. Removing the integration reverses it.",
+                        path.display()
+                    ),
+                })
                 .with_reversal(StepAction::ManageArtifact {
                     operation: ArtifactOperation::Remove,
                     path: path.to_path_buf(),
@@ -323,6 +384,10 @@ impl ClaudeCodeIntegration {
             } else {
                 format!("changes against what is on this host: {}", disclosure.diff.join("  "))
             });
+            plan = plan.warn(format!(
+                "administrator authorization is obtained by: {}",
+                disclosure.mechanism
+            ));
             plan = plan.warn(disclosure.backup.clone());
             plan = plan.warn(disclosure.rollback.clone());
             if let Some(conflict) = &disclosure.conflict {
@@ -339,7 +404,7 @@ impl ClaudeCodeIntegration {
             ));
         }
 
-        match self.managed_authority.availability() {
+        match self.availability_for(method) {
             Authorization::Available => {}
             Authorization::NonInteractive { detail } => {
                 plan = plan.warn(format!(
@@ -406,6 +471,18 @@ impl ClaudeCodeIntegration {
     /// moments, and an executor built for the wrong one would report a
     /// project-scoped install as unobservable and refuse to remove it.
     pub fn scoped_executor(&self, rendered: BTreeMap<String, String>) -> ClaudeCodeStepExecutor {
+        self.scoped_executor_elevated(rendered, &ElevationContext::default())
+    }
+
+    /// As [`scoped_executor`](Self::scoped_executor), with the authorization
+    /// `elevation` selects for the one privileged step (AAASM-6491). A request
+    /// that asked for the terminal and has no channel to it is refused as
+    /// non-interactive; the GUI authority is reachable only by saying so.
+    pub fn scoped_executor_elevated(
+        &self,
+        rendered: BTreeMap<String, String>,
+        elevation: &ElevationContext,
+    ) -> ClaudeCodeStepExecutor {
         let mut executor = ClaudeCodeStepExecutor::new();
         for scope in [SettingsScope::User, SettingsScope::Project, SettingsScope::Managed] {
             if let Ok(dir) = self.paths.launch_env_dir(scope) {
@@ -415,7 +492,7 @@ impl ClaudeCodeIntegration {
         for (step_id, content) in rendered {
             executor = executor.with_content(step_id, content);
         }
-        if let Some(installer) = self.managed_installer() {
+        if let Some(installer) = self.managed_installer_for(elevation, false) {
             executor = executor.with_managed_installer(installer);
         }
         executor
@@ -967,7 +1044,10 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         // `HostEnforced`. A user- or project-scoped plan cannot reach it —
         // which is the governing rule of AAASM-5298 expressed as a number.
         let host_enforcement_available = scope == SettingsScope::Managed
-            && !matches!(self.managed_authority.availability(), Authorization::Unavailable { .. });
+            && !matches!(
+                self.availability_for(request.authorization_method),
+                Authorization::Unavailable { .. }
+            );
         let ceiling = match (interception_available, host_enforcement_available) {
             (true, true) => ProtectionLevel::HostEnforced,
             (true, false) => ProtectionLevel::GatewayProtected,
@@ -987,7 +1067,8 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             //     in the plan *and* in the disclosure the CLI renders before the
             //     confirmation — the plan is what the service checks consent
             //     against, the disclosure is what makes that consent informed.
-            plan = self.with_endpoint_managed_step(plan, request.profile, &settings_path)?;
+            plan =
+                self.with_endpoint_managed_step(plan, request.profile, &settings_path, request.authorization_method)?;
         } else {
             // 1b. The unprivileged install: tool-action governance in a file the
             //     developer already owns, and not the data path.

@@ -60,7 +60,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use aa_devtool_contract::{sha256_hex, AdapterError, ProtectionProfile};
+use aa_devtool_contract::{sha256_hex, AdapterError, ElevationPurpose, ProtectionProfile};
 
 /// The directory macOS reserves for Claude Code's endpoint-managed settings.
 ///
@@ -249,7 +249,7 @@ pub enum Authorization {
 
 impl Authorization {
     /// Turn a pre-flight reading into the refusal it implies, or `Ok(())`.
-    fn require(&self, path: &Path) -> Result<(), ManagedSettingsError> {
+    pub(crate) fn require(&self, path: &Path) -> Result<(), ManagedSettingsError> {
         match self {
             Self::Available => Ok(()),
             Self::NonInteractive { detail } => Err(ManagedSettingsError::NonInteractive { detail: detail.clone() }),
@@ -276,6 +276,18 @@ pub trait PrivilegedFileAuthority: fmt::Debug + Send + Sync {
     /// Place `staged` at `target`, owned by the administrator, replacing
     /// whatever is there atomically.
     fn install_file(&self, target: &Path, staged: &Path) -> Result<(), ManagedSettingsError>;
+
+    /// As [`install_file`](Self::install_file), stating *why* the placement is
+    /// requested so an authority that shows the operator what they are
+    /// authorizing can say so (AAASM-6491). The default ignores it.
+    fn install_file_for(
+        &self,
+        target: &Path,
+        staged: &Path,
+        _purpose: ElevationPurpose,
+    ) -> Result<(), ManagedSettingsError> {
+        self.install_file(target, staged)
+    }
 
     /// Delete `target`. Must succeed when `target` is already absent.
     fn delete_file(&self, target: &Path) -> Result<(), ManagedSettingsError>;
@@ -936,7 +948,10 @@ impl ManagedSettingsInstaller {
         std::fs::write(&staged, &disclosure.proposed).map_err(|e| io_error(&staged, &e))?;
         set_mode(&staged, 0o644)?;
 
-        if let Err(refused) = self.authority.install_file(&self.target, &staged) {
+        if let Err(refused) = self
+            .authority
+            .install_file_for(&self.target, &staged, ElevationPurpose::PlaceReviewed)
+        {
             // Nothing was placed, so nothing this attempt created may outlive
             // it: the staged copy and the backup taken moments ago. Leaving
             // them behind on a denied or cancelled prompt made every refused
@@ -976,7 +991,11 @@ impl ManagedSettingsInstaller {
                 let restore = match &backup {
                     Some(path) => std::fs::copy(path, &staged)
                         .ok()
-                        .and_then(|_| self.authority.install_file(&self.target, &staged).ok())
+                        .and_then(|_| {
+                            self.authority
+                                .install_file_for(&self.target, &staged, ElevationPurpose::RestoreBackup)
+                                .ok()
+                        })
                         .is_some(),
                     None => self.authority.delete_file(&self.target).is_ok(),
                 };
@@ -1096,7 +1115,9 @@ impl ManagedSettingsInstaller {
                     self.ensure_work_dir()?;
                     std::fs::write(&staged, &prior).map_err(|e| io_error(&staged, &e))?;
                     set_mode(&staged, 0o644)?;
-                    let placed = self.authority.install_file(&self.target, &staged);
+                    let placed =
+                        self.authority
+                            .install_file_for(&self.target, &staged, ElevationPurpose::RestoreBackup);
                     let _ = std::fs::remove_file(&staged);
                     placed?;
                     if self.current()?.as_deref() != Some(prior.as_str()) {

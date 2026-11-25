@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use aa_devtool_claude_code::brokered_authority::testing::FakeBroker;
 use aa_devtool_claude_code::lifecycle::{
     CA_ENV_VAR, MITM_HOSTS, STEP_ENDPOINT_MANAGED_SETTINGS, STEP_MANAGED_SETTINGS, STEP_NODE_EXTRA_CA_CERTS,
     STEP_PROTECTION_TEST, STEP_PROXY_CA, STEP_PROXY_ENV, STEP_SIDE_CHANNEL_SCOPE,
@@ -21,9 +22,9 @@ use aa_devtool_claude_code::managed_settings::testing::FakeAuthority;
 use aa_devtool_claude_code::managed_settings::{PrivilegedFileAuthority, MANAGED_ONLY_KEYS};
 use aa_devtool_claude_code::{ClaudeCodeAdapter, ClaudeCodeIntegration, ClaudeCodePaths};
 use aa_devtool_contract::{
-    capability_conformance, CallerEnvironment, DevToolIntegration, DevToolKind, EnvValue, EvidenceKind,
-    IntegrationCapability, IntegrationRequest, LaunchSpec, ProtectionLevel, ProtectionProfile, SettingsScope,
-    StepAction, StepPrivilege,
+    capability_conformance, AuthorizationMethod, CallerEnvironment, DevToolIntegration, DevToolKind, ElevationContext,
+    ElevationOutcome, EnvValue, EvidenceKind, IntegrationCapability, IntegrationRequest, LaunchSpec, ProtectionLevel,
+    ProtectionProfile, SettingsScope, StepAction, StepPrivilege,
 };
 
 /// A fabricated PEM. Nothing verifies it here; the tests assert it is *copied*,
@@ -1079,4 +1080,110 @@ async fn host_enforcement_reason_does_not_overclaim_product_scope() {
         reason.contains("NODE_EXTRA_CA_CERTS"),
         "reason must name how this integration establishes trust instead: {reason}"
     );
+}
+
+// ── Terminal-first authorization (AAASM-6491) ───────────────────────────────
+
+#[tokio::test]
+async fn a_terminal_plan_states_the_sudo_mechanism_and_never_the_gui_dialog() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+    let plan = integration
+        .plan_integration(&request(SettingsScope::Managed).with_authorization_method(AuthorizationMethod::Terminal))
+        .await
+        .expect("plan");
+    let warnings = plan.warnings.join("\n");
+    assert!(
+        warnings.contains(
+            "sudo in the terminal that ran this command: one /usr/bin/install as root; aasm and the runtime are not elevated"
+        ),
+        "{warnings}"
+    );
+    let step = plan
+        .steps
+        .iter()
+        .find(|s| s.id == STEP_ENDPOINT_MANAGED_SETTINGS)
+        .expect("managed step");
+    match &step.privilege {
+        StepPrivilege::PrivilegedHost { consent_prompt } => {
+            assert!(consent_prompt.contains("sudo in this terminal"), "{consent_prompt}");
+            assert!(!consent_prompt.contains("macOS"), "{consent_prompt}");
+        }
+        other => panic!("the managed step must be privileged, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_gui_plan_keeps_the_dialog_wording() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+    let plan = integration
+        .plan_integration(&request(SettingsScope::Managed).with_authorization_method(AuthorizationMethod::Gui))
+        .await
+        .expect("plan");
+    let warnings = plan.warnings.join("\n");
+    assert!(warnings.contains("macOS administrator authorization"), "{warnings}");
+}
+
+#[test]
+fn the_authority_follows_the_requests_method_and_never_defaults_to_the_dialog_when_a_channel_exists() {
+    let fixture = Fixture::new();
+    let gui = FakeAuthority::granting();
+    let integration = fixture.integration_with_authority(Some("2.1.220"), gui.clone());
+    let doc = aa_devtool_claude_code::managed_settings::managed_settings_document(ProtectionProfile::Recommended)
+        .expect("document");
+
+    // Terminal + broker: the broker is used and the dialog authority is not.
+    let broker = FakeBroker::completing();
+    let installer = integration
+        .managed_installer_for(
+            &ElevationContext {
+                method: AuthorizationMethod::Terminal,
+                broker: Some(broker.clone()),
+            },
+            false,
+        )
+        .expect("installer");
+    let disclosure = installer.disclose(&doc).expect("disclosure");
+    installer.install(&disclosure).expect("install through the broker");
+    assert_eq!(broker.operations().len(), 1);
+    assert!(gui.calls().is_empty(), "{:?}", gui.calls());
+
+    // Terminal with no channel: refused as non-interactive, nothing elevated.
+    let installer = integration
+        .managed_installer_for(&ElevationContext::without_broker(AuthorizationMethod::Terminal), false)
+        .expect("installer");
+    let err = installer.authorization();
+    assert!(matches!(
+        err,
+        aa_devtool_claude_code::managed_settings::Authorization::NonInteractive { .. }
+    ));
+
+    // A request that can carry a broker but states no method is refused.
+    let installer = integration
+        .managed_installer_for(
+            &ElevationContext {
+                method: AuthorizationMethod::Unstated,
+                broker: Some(FakeBroker::answering(ElevationOutcome::Completed)),
+            },
+            false,
+        )
+        .expect("installer");
+    assert!(matches!(
+        installer.authorization(),
+        aa_devtool_claude_code::managed_settings::Authorization::Unavailable { .. }
+    ));
+
+    // Gui, and an old connection that states nothing, use the dialog authority.
+    for method in [AuthorizationMethod::Gui, AuthorizationMethod::Unstated] {
+        let installer = integration
+            .managed_installer_for(&ElevationContext::without_broker(method), false)
+            .expect("installer");
+        assert_eq!(
+            installer.authorization(),
+            aa_devtool_claude_code::managed_settings::Authorization::Available
+        );
+    }
 }

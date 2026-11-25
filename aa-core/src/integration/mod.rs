@@ -71,7 +71,8 @@ pub use contract::{
 };
 pub use drift::{ArtifactObservation, DriftFinding, DriftInputs, DriftKind, DriftReport, ObservedStep};
 pub use elevation::{
-    AuthorizationMethod, ElevatedKind, ElevatedOperation, ElevationBroker, ElevationOutcome, ElevationPurpose,
+    AuthorizationMethod, ElevatedKind, ElevatedOperation, ElevationBroker, ElevationContext, ElevationOutcome,
+    ElevationPurpose,
 };
 #[cfg(feature = "serde")]
 pub use engine::{

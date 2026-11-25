@@ -19,12 +19,17 @@
 //! set of operations below, against its own copy of the target path.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// How the operator asked for administrator authorization to be obtained.
 ///
 /// Decided by the client, recorded in the reviewed plan, and re-checked at
 /// apply so a plan reviewed under one method can never run under another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum AuthorizationMethod {
     /// `sudo` in the terminal that ran the command.
     Terminal,
@@ -118,6 +123,45 @@ pub trait ElevationBroker: Send + Sync + std::fmt::Debug {
     /// Run `operation`, returning only after the operator has answered.
     fn perform(&self, operation: &ElevatedOperation) -> ElevationOutcome;
 }
+
+/// What a request carries about authorization: the method the operator chose and,
+/// when the connection can carry one, the broker that performs it.
+///
+/// `broker: None` with [`AuthorizationMethod::Terminal`] means the request
+/// arrived on a connection with no way to reach the operator's terminal; that
+/// is refused as non-interactive rather than falling back to another method.
+#[derive(Clone, Default)]
+pub struct ElevationContext {
+    /// How the operator asked for authorization to be obtained.
+    pub method: AuthorizationMethod,
+    /// The channel back to the operator's terminal, when there is one.
+    pub broker: Option<Arc<dyn ElevationBroker>>,
+}
+
+impl ElevationContext {
+    /// A context with `method` and no channel (planning, or an old connection).
+    #[must_use]
+    pub fn without_broker(method: AuthorizationMethod) -> Self {
+        Self { method, broker: None }
+    }
+}
+
+impl std::fmt::Debug for ElevationContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ElevationContext")
+            .field("method", &self.method)
+            .field("has_broker", &self.broker.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for ElevationContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.method == other.method && self.broker.is_some() == other.broker.is_some()
+    }
+}
+
+impl Eq for ElevationContext {}
 
 #[cfg(test)]
 mod tests {
