@@ -32,7 +32,7 @@ enum Channel {
     /// Planning: nothing will be elevated, only described.
     DisclosureOnly,
     /// An apply arrived on a connection with no way to reach a terminal.
-    NoChannel,
+    Unreachable,
     /// Refused before anything is asked, with the reason shown to the operator.
     Refused(String),
 }
@@ -74,7 +74,7 @@ impl BrokeredAuthority {
     /// connection that cannot carry it. Refuses as non-interactive.
     pub fn without_channel(expected_target: impl Into<PathBuf>) -> Self {
         Self {
-            channel: Channel::NoChannel,
+            channel: Channel::Unreachable,
             expected_target: expected_target.into(),
         }
     }
@@ -138,7 +138,7 @@ impl PrivilegedFileAuthority for BrokeredAuthority {
                     }
                 }
             }
-            Channel::NoChannel => Authorization::NonInteractive {
+            Channel::Unreachable => Authorization::NonInteractive {
                 detail: "terminal authorization needs the client that ran this command to keep its terminal \
                          attached, and this connection has no such channel; upgrade the runtime, or pass \
                          --admin-auth gui"
