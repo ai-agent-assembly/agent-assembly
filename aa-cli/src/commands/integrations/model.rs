@@ -432,7 +432,7 @@ impl PlanReport {
     pub fn privileged_content_sha256(&self) -> Option<String> {
         self.steps
             .iter()
-            .find(|s| s.privilege == "privileged_host")
+            .find(|s| s.id == aa_devtool_claude_code::lifecycle::STEP_ENDPOINT_MANAGED_SETTINGS)
             .and_then(|s| s.content_sha256.clone())
     }
 }

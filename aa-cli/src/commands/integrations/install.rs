@@ -33,7 +33,7 @@ use clap::Args;
 
 use crate::output::OutputFormat;
 
-use super::elevation::{self, AdminAuthArg, Elevator};
+use super::elevation::{self, AdminAuthArg, Elevator, Mode};
 use super::model::InstallReport;
 use super::plan::PlanArgs;
 use super::render::{emit, Report};
@@ -228,9 +228,11 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
         let wants_authorization = args.install_managed_settings;
         let record = elevation::new_record();
         if wants_authorization && matches!(args.admin_auth, AdminAuthArg::Terminal) {
-            session
-                .client
-                .set_elevation_handler(Elevator::new(plan.privileged_content_sha256(), record.clone()).into_handler());
+            session.client.set_elevation_handler(
+                Elevator::new(Mode::Install, plan.privileged_content_sha256(), record.clone())
+                    .assuming_yes(args.yes)
+                    .into_handler(),
+            );
         }
         let target = Target::here()?.with_authorization_method(if wants_authorization {
             args.admin_auth.as_wire()

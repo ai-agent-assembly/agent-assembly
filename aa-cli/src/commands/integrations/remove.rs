@@ -46,7 +46,7 @@ use clap::Args;
 
 use crate::output::OutputFormat;
 
-use super::elevation::{self, AdminAuthArg, Elevator};
+use super::elevation::{self, AdminAuthArg, Elevator, Mode};
 use super::model::{RemoveReport, RuntimeInfo};
 use super::render::{emit, Report};
 use super::session::{Failure, SessionOptions};
@@ -168,12 +168,15 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
 
         // Only a removal that has to touch the root-owned file asks for
         // authorization, and the preview says how before anyone confirms.
-        // The managed-settings undo is a settings write at the managed scope;
-        // a removal preview step carries no privilege marker of its own.
-        let privileged = preview
-            .steps
-            .iter()
-            .any(|s| s.privilege == "privileged_host" || s.settings_scope == "managed");
+        // Whether this removal reaches the root-owned file is decided by *path*:
+        // a removal step carries no privilege marker, and its scope token or id
+        // say nothing a path does not say better.
+        let privileged = elevation::involves_managed_file(
+            preview
+                .steps
+                .iter()
+                .flat_map(|s| s.artifact_paths.iter().map(String::as_str)),
+        );
         let human = if privileged {
             format!(
                 "{}{}\n",
@@ -187,10 +190,19 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
             OutputFormat::Table => print!("{human}"),
             _ => eprint!("{human}"),
         }
-        // Checked after the preview and before the question: a removal that
-        // cannot be authorized should say so now, not after "y".
-        if privileged && matches!(args.admin_auth, AdminAuthArg::Terminal) && !args.dry_run {
-            elevation::preflight()?;
+        // Checked after the preview and before the question, and before anything
+        // is sent that could mutate: a removal that cannot be authorized should
+        // say so now, not after "y". A runtime too old to carry terminal
+        // authorization is refused here too, rather than left to open a dialog.
+        if privileged && !args.dry_run {
+            elevation::refuse_terminal_below_v8(
+                args.admin_auth,
+                privileged,
+                session.client.negotiated().di_api_version,
+            )?;
+            if matches!(args.admin_auth, AdminAuthArg::Terminal) {
+                elevation::preflight()?;
+            }
         }
 
         if !preview.residual.is_empty() && !args.force {
@@ -235,9 +247,11 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
         let version = session.client.negotiated().di_api_version;
         let method = elevation::method_to_send(args.admin_auth, privileged, version);
         if !method.is_empty() && matches!(args.admin_auth, AdminAuthArg::Terminal) {
-            session
-                .client
-                .set_elevation_handler(Elevator::new(None, record.clone()).into_handler());
+            session.client.set_elevation_handler(
+                Elevator::new(Mode::Remove, None, record.clone())
+                    .assuming_yes(args.yes)
+                    .into_handler(),
+            );
         }
         let target = target.with_authorization_method(method);
         let removed = session

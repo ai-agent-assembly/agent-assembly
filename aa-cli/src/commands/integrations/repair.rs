@@ -62,7 +62,7 @@ use clap::Args;
 
 use crate::output::OutputFormat;
 
-use super::elevation::{self, AdminAuthArg, Elevator};
+use super::elevation::{self, AdminAuthArg, Elevator, Mode};
 use super::model::{RepairReport, RuntimeInfo, StatusReport, UnsupportedRow};
 use super::render::emit;
 use super::session::SessionOptions;
@@ -223,13 +223,14 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
         // A repair elevates only when the root-owned managed file is part of
         // the installation; say how before asking, and refuse now if that way
         // is not available (AAASM-6491).
-        let privileged = drifted.iter().any(|d| d.contains("endpoint-managed"))
-            || before
-                .evidence
-                .iter()
-                .any(|e| e.mechanism == "host_enforcement" && e.kind == "host_attested");
+        let privileged = elevation::involves_managed_file(drifted.iter().map(String::as_str));
         if privileged {
             eprintln!("  {}", args.admin_auth.disclosure_line());
+            elevation::refuse_terminal_below_v8(
+                args.admin_auth,
+                privileged,
+                session.client.negotiated().di_api_version,
+            )?;
             if matches!(args.admin_auth, AdminAuthArg::Terminal) {
                 elevation::preflight()?;
             }
@@ -245,8 +246,8 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
         let method = elevation::method_to_send(args.admin_auth, privileged, version);
         if !method.is_empty() && matches!(args.admin_auth, AdminAuthArg::Terminal) {
             session.client.set_elevation_handler(
-                Elevator::new(None, record.clone())
-                    .asking_when_unreviewed()
+                Elevator::new(Mode::Repair, None, record.clone())
+                    .assuming_yes(args.yes)
                     .into_handler(),
             );
         }
