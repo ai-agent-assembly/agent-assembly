@@ -209,10 +209,8 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
                 session.client.negotiated().di_api_version,
             )?;
         }
-        if privileged && !args.dry_run {
-            if matches!(args.admin_auth, AdminAuthArg::Terminal) {
-                elevation::preflight()?;
-            }
+        if privileged && !args.dry_run && matches!(args.admin_auth, AdminAuthArg::Terminal) {
+            elevation::preflight()?;
         }
 
         if !preview.residual.is_empty() && !args.force {
