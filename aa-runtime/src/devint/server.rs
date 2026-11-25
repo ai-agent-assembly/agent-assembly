@@ -387,6 +387,17 @@ async fn serve_connection(
                     tokio::select! {
                         response = &mut served => break response,
                         Some(call) = inbox.recv() => {
+                            // Once the stream is poisoned (a timeout, a bad
+                            // answer, EOF) nothing further may be written to
+                            // it: later calls in this request are cancelled on
+                            // the spot, so a rollback does not wait out the
+                            // timeout again per operation.
+                            if close_after {
+                                let _ = call.reply.send(aa_core::integration::ElevationOutcome::Cancelled(
+                                    "the connection to the client is no longer usable".to_string(),
+                                ));
+                                continue;
+                            }
                             let done = elevation::exchange(
                                 &mut reader,
                                 &mut writer,

@@ -113,6 +113,29 @@ fn handshake_timed_out(path: &Path, timeout: Duration) -> ClientError {
 /// remediation and the supported window is precisely what `Incompatible`
 /// already models. The reason names the negotiated version, so nothing is lost
 /// by the origin being local.
+fn refuse_project_scope_below_v6(negotiated_version: u32, settings_scope: &str) -> Result<(), ClientError> {
+    if negotiated_version >= DI_API_PROJECT_ROOT_SINCE {
+        return Ok(());
+    }
+    if parse_scope(settings_scope) != Some(SettingsScope::Project) {
+        return Ok(());
+    }
+    Err(ClientError::Incompatible(wire::Incompatible {
+        reason: format!(
+            "this connection negotiated DI-API {negotiated_version}; a caller-chosen project root \
+             arrived in DI-API {DI_API_PROJECT_ROOT_SINCE}, so a project-scope request made over \
+             it would be resolved against the runtime's own working directory rather than yours"
+        ),
+        remediation: format!(
+            "upgrade the running AASM runtime to one speaking DI-API \
+             {DI_API_PROJECT_ROOT_SINCE} or later, then retry; user and managed scope are \
+             unaffected and work against this runtime as-is"
+        ),
+        min_supported: DI_API_MIN_SUPPORTED,
+        max_supported: DI_API_MAX_SUPPORTED,
+    }))
+}
+
 /// Refuse a `terminal` authorization request on a connection that cannot carry
 /// it (AAASM-6491).
 ///
@@ -135,29 +158,6 @@ fn refuse_terminal_below_v8(negotiated_version: u32, method: &str) -> Result<(),
         remediation: format!(
             "upgrade the running AASM runtime to one speaking DI-API {DI_API_TERMINAL_ELEVATION_SINCE} or later, \
              or pass --admin-auth gui to use the macOS dialog"
-        ),
-        min_supported: DI_API_MIN_SUPPORTED,
-        max_supported: DI_API_MAX_SUPPORTED,
-    }))
-}
-
-fn refuse_project_scope_below_v6(negotiated_version: u32, settings_scope: &str) -> Result<(), ClientError> {
-    if negotiated_version >= DI_API_PROJECT_ROOT_SINCE {
-        return Ok(());
-    }
-    if parse_scope(settings_scope) != Some(SettingsScope::Project) {
-        return Ok(());
-    }
-    Err(ClientError::Incompatible(wire::Incompatible {
-        reason: format!(
-            "this connection negotiated DI-API {negotiated_version}; a caller-chosen project root \
-             arrived in DI-API {DI_API_PROJECT_ROOT_SINCE}, so a project-scope request made over \
-             it would be resolved against the runtime's own working directory rather than yours"
-        ),
-        remediation: format!(
-            "upgrade the running AASM runtime to one speaking DI-API \
-             {DI_API_PROJECT_ROOT_SINCE} or later, then retry; user and managed scope are \
-             unaffected and work against this runtime as-is"
         ),
         min_supported: DI_API_MIN_SUPPORTED,
         max_supported: DI_API_MAX_SUPPORTED,

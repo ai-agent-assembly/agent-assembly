@@ -727,6 +727,49 @@ async fn v8_is_required_for_terminal_authorization_and_an_older_peer_is_refused_
     server.shutdown().await;
 }
 
+/// The same refusal for every verb that can elevate: `apply`, `repair` and
+/// `remove` never reach the wire with `terminal` below v8.
+#[tokio::test]
+async fn terminal_authorization_is_refused_before_the_send_by_apply_repair_and_remove() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    let home = a_real_user_config_home();
+    let home_path = home.path().join(".claude");
+    let target = || TargetRequest {
+        settings_scope: "user",
+        user_config_home: home_path.to_str().expect("utf-8 tempdir"),
+        authorization_method: "terminal",
+        ..TargetRequest::default()
+    };
+    for version in DI_API_MIN_SUPPORTED..DI_API_TERMINAL_ELEVATION_SINCE {
+        let mut client = connect_offering(&server, &[version]).await;
+        let before = server.lifecycle().calls();
+        let tool = claude_code_id();
+        let refusals = [
+            client.apply(&tool, "plan-1", target()).await.err(),
+            client.repair(&tool, target()).await.err(),
+            client.remove(&tool, "plan-1", target()).await.err(),
+        ];
+        for refusal in refusals {
+            match refusal {
+                Some(ClientError::Incompatible(r)) => {
+                    assert!(
+                        r.remediation.contains("--admin-auth gui"),
+                        "v{version}: {}",
+                        r.remediation
+                    )
+                }
+                other => panic!("v{version}: expected Incompatible, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            server.lifecycle().calls(),
+            before,
+            "v{version}: nothing may reach the wire"
+        );
+    }
+    server.shutdown().await;
+}
+
 /// `gui` below v8 is the old runtime's only behaviour, so it is *dropped*, not
 /// refused — and a v8 server never sees a stated method from a v7 peer.
 #[tokio::test]
