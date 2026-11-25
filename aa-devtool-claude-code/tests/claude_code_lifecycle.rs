@@ -1115,7 +1115,7 @@ async fn a_terminal_plan_states_the_sudo_mechanism_and_never_the_gui_dialog() {
 }
 
 #[tokio::test]
-async fn a_gui_plan_keeps_the_dialog_wording() {
+async fn a_gui_plan_names_the_injected_authority_and_never_the_sudo_mechanism() {
     let fixture = Fixture::new();
     fixture.write_ca();
     let integration = fixture.integration(Some("2.1.220"));
@@ -1124,7 +1124,11 @@ async fn a_gui_plan_keeps_the_dialog_wording() {
         .await
         .expect("plan");
     let warnings = plan.warnings.join("\n");
-    assert!(warnings.contains("macOS administrator authorization"), "{warnings}");
+    assert!(
+        warnings.contains("administrator authorization is obtained by: a test double that never elevates"),
+        "the dialog slot's own mechanism is what a gui plan discloses: {warnings}"
+    );
+    assert!(!warnings.contains("sudo in the terminal"), "{warnings}");
 }
 
 #[test]

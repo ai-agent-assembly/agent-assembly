@@ -1370,21 +1370,23 @@ exit 1
 
         let mut pty_master = None;
         if tty.is_some() {
-            let (mut master, mut slave) = (0, 0);
-            // SAFETY: `openpty` writes two valid descriptors on success, which
-            // are wrapped in `OwnedFd` immediately and closed on drop.
-            let rc = unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                )
+            // `posix_openpt` rather than `openpty`: the latter needs `-lutil` on
+            // older glibc, and this file is compiled on Linux CI even though
+            // every test in it declines there.
+            // SAFETY: each call is checked, and the descriptors are wrapped in
+            // `OwnedFd` immediately so they close on drop.
+            let (master, slave) = unsafe {
+                let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+                assert!(master >= 0, "posix_openpt failed");
+                let master = OwnedFd::from_raw_fd(master);
+                assert_eq!(libc::grantpt(master.as_raw_fd()), 0, "grantpt failed");
+                assert_eq!(libc::unlockpt(master.as_raw_fd()), 0, "unlockpt failed");
+                let name = libc::ptsname(master.as_raw_fd());
+                assert!(!name.is_null(), "ptsname failed");
+                let slave = libc::open(name, libc::O_RDWR | libc::O_NOCTTY);
+                assert!(slave >= 0, "opening the pty slave failed");
+                (master, OwnedFd::from_raw_fd(slave))
             };
-            assert_eq!(rc, 0, "openpty failed");
-            // SAFETY: both descriptors were just returned by `openpty`.
-            let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
             let slave_fd = slave.as_raw_fd();
             // SAFETY: runs between fork and exec; only async-signal-safe calls.
             unsafe {
