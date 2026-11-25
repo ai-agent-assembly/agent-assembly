@@ -2008,8 +2008,39 @@ esac
         if !typed.is_empty() {
             master.write_all(typed.as_bytes()).expect("type into the pty");
         }
+        // Read the master while the child runs. What the line discipline echoes
+        // sits in its queue, and a session leader whose terminal holds unread
+        // output cannot finish exiting on macOS — which hung this test for hours
+        // before it drained. The watchdog turns any remaining hang into a failure.
+        let pid = child.id();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watchdog = {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                for _ in 0..200 {
+                    if done.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                // SAFETY: `pid` is this test's own child.
+                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            })
+        };
+        let drain = std::thread::spawn(move || {
+            let mut master = master;
+            let mut buf = [0u8; 256];
+            loop {
+                match master.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        });
         let output = child.wait_with_output().expect("wait for the probe child");
-        drop(master);
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = watchdog.join();
+        let _ = drain.join();
         let text = String::from_utf8_lossy(&output.stdout).into_owned();
         assert!(
             text.contains("PROBE case="),
