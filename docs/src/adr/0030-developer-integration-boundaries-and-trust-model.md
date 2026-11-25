@@ -888,6 +888,46 @@ rejected one, it must specifically refuse to say `unchanged` and refuse to be au
 states whether a write happened, never what was written, and the projection test that asserts no
 step content escapes covers it.
 
+#### 5.4c Update — AAASM-6491: the runtime may ask the client to authorize one operation
+
+*Amends §5.4's "runtime answers, client asks" shape for exactly one case. Nothing else about the
+transport, the closed verb space or the data-minimisation rule (§5.5) changes.*
+
+**The problem.** `apply`, `repair` and `remove` run inside the detached runtime, whose stdio is
+null. When one of them has to place or delete the root-owned managed-settings file, the runtime
+cannot ask for a password, and the only mechanism it had — a macOS GUI authorization dialog —
+fails on SSH and tmux sessions and presents a dialog from a background process.
+
+**The decision.** While a verb is in flight, the runtime may send the *same connection's* client one
+**elevation request** (tag 5, runtime → client) and block until the client answers with an
+**elevation result** (tag 3, client → runtime) for the same `request_id` and `sequence`. There is no
+new verb: the verb space stays closed, and a frame that is not the answer to a request the runtime
+sent is a protocol violation (`unsolicited_elevation_result`).
+
+- **Only at DI-API 8.** A connection negotiated below v8 is never sent tag 5, and a client refuses
+  `terminal` authorization below v8 before sending anything, because a pre-v8 runtime drops
+  `authorization_method` silently and would open the dialog (the undetectable-discard hazard of
+  §5.4's v6 and v7 gates). `gui` below v8 is dropped, which is the old runtime's only behaviour.
+- **Payload.** Paths and a digest only (`kind`, `purpose`, `target`, `staged_path`,
+  `staged_sha256`). No content, no command, no password. The client derives the command from a
+  closed set of operations and acts on its **own** constant for the target; the path the runtime
+  sent is informational.
+- **Fail closed.** EOF, a ten-minute per-operation timeout, a mismatched `request_id` or `sequence`,
+  and an `UNSPECIFIED` outcome all read as *cancelled*, so the engine's existing rollback runs. A
+  mismatch also closes the connection.
+- **Blocking, off the reactor.** The engine is synchronous, so apply, repair and remove run on the
+  blocking pool while the connection task services the exchange.
+- **The method is part of the review.** `authorization_method` (`terminal` | `gui`) is recorded in
+  the authored plan; applying under a different method is refused ("authorization method changed
+  after review"). At v8 a privileged managed plan that states none is refused rather than defaulted.
+
+**What this does not change.** `aasm` and the runtime never run as root. The only elevated
+operation is one `/usr/bin/install` (or `/bin/rm`) of one file, run by `sudo` in the terminal that
+ran the command. The installer's backup, staging, read-back of hash, owner and mode, install record
+and rollback are unchanged and unprivileged. The client never sees or relays a password: `sudo`
+reads it from `/dev/tty`. A refused or cancelled prompt now also removes the staged copy and the
+backup the attempt created.
+
 #### 5.5 Data minimisation — the response types cannot carry what must not leave
 
 Minimisation is enforced by the *shape of the response types*, not by a redaction pass
@@ -1294,6 +1334,7 @@ that ticket rather than as checks present in this documentation-only change.
 | [AAASM-5628](https://lightning-dust-mite.atlassian.net/browse/AAASM-5628) | Adds §5.4a: DI-API v4 runtime provenance, and the client-side refusal. Blocks a trustworthy [AAASM-5308](https://lightning-dust-mite.atlassian.net/browse/AAASM-5308) privileged run |
 | [AAASM-5499](https://lightning-dust-mite.atlassian.net/browse/AAASM-5499) | Ratifies the `changed`/`unchanged`/`refused`/`failed` outcome contract §5.4b completes for `install` |
 | [AAASM-5674](https://lightning-dust-mite.atlassian.net/browse/AAASM-5674) | Adds §5.4b: DI-API v5 apply outcome, and the rule that no field whose absence would decode to a favourable value may be a bare proto3 scalar |
+| [AAASM-6491](https://lightning-dust-mite.atlassian.net/browse/AAASM-6491) | Adds §5.4c: DI-API v8 terminal elevation — the runtime asks the client, over the in-flight connection, to authorize one operation |
 | [AAASM-5982](https://lightning-dust-mite.atlassian.net/browse/AAASM-5982) | §6.4: adds `aa-proxy` to the one-versioned-unit list, matching row 7's placement of model-path protection in L-D core; aligns `aa-proxy`'s runtime resolution with the exe-sibling-first search this row already requires |
 | [ADR 0002](0002-sdk-security-boundary.md) | Complements — "position, not code, confers authority"; the untrusted client / trusted runtime split this ADR extends to Developer Integrations |
 | [ADR 0004](0004-governance-enforcement-flow.md) | Complements — the DI-API sits in the same non-SDK carve-out as REST and carries no policy decisions (§1.2). **Not superseded.** |
