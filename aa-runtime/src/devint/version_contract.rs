@@ -740,7 +740,9 @@ async fn terminal_authorization_is_refused_before_the_send_by_apply_repair_and_r
         authorization_method: "terminal",
         ..TargetRequest::default()
     };
-    for version in DI_API_MIN_SUPPORTED..DI_API_TERMINAL_ELEVATION_SINCE {
+    // User scope is itself refused below v7 with the user-scope remediation, so
+    // the terminal-specific refusal is what v7 is the first to reach.
+    for version in DI_API_USER_CONFIG_HOME_SINCE..DI_API_TERMINAL_ELEVATION_SINCE {
         let mut client = connect_offering(&server, &[version]).await;
         let before = server.lifecycle().calls();
         let tool = claude_code_id();
