@@ -33,6 +33,7 @@ use clap::{Args, Subcommand, ValueEnum};
 
 use crate::output::OutputFormat;
 
+pub mod elevation;
 pub mod exit;
 pub mod install;
 pub mod list;
