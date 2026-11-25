@@ -53,12 +53,15 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use aa_core::integration::{sha256_hex, ElevationOutcome};
 use aa_devtool_claude_code::managed_settings::MANAGED_SETTINGS_FILE;
 use aa_devtool_claude_code::MANAGED_SETTINGS_PATH;
 use aa_proto::assembly::devint::v1 as wire;
+use aa_runtime::devint::elevation::CLIENT_ELEVATION_BUDGET;
 use aa_runtime::devint::ElevationHandler;
 use clap::ValueEnum;
 
@@ -71,9 +74,10 @@ const INSTALL: &str = "/usr/bin/install";
 const TEE: &str = "/usr/bin/tee";
 const RM: &str = "/bin/rm";
 const RMDIR: &str = "/bin/rmdir";
-/// The temporary the verified bytes are written to, inside the root-owned
-/// managed directory.
-const TMP_NAME: &str = ".managed-settings.json.aasm-new";
+/// The fixed prefix of the temporary the verified bytes are written to, inside
+/// the root-owned managed directory. Each run appends its own suffix, so two runs
+/// never share a name and a leftover is attributable.
+const TMP_PREFIX: &str = ".managed-settings.json.aasm-new.";
 /// What `sudo` and its children get as `PATH`; nothing else of the caller's
 /// environment crosses, because `sudo` is about to act on the caller's say-so.
 const SAFE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -133,7 +137,12 @@ pub fn effective_managed_target() -> String {
 /// removal or drift report reliably carries.
 pub fn involves_managed_file<'a>(paths: impl IntoIterator<Item = &'a str>) -> bool {
     let managed = effective_managed_target();
-    paths.into_iter().any(|p| Path::new(p) == Path::new(&managed))
+    // A drift finding names an artifact as `path` or `path#key`, and may name
+    // something that is not a path at all ("tool version"): compare the part
+    // before the `#` as well as the whole label.
+    paths.into_iter().any(|p| {
+        Path::new(p) == Path::new(&managed) || p.split('#').next().is_some_and(|f| Path::new(f) == Path::new(&managed))
+    })
 }
 
 /// The test seam's stand-in for `sudo`, when — and only when — the managed root
@@ -165,7 +174,7 @@ impl Paths {
         let dir = Path::new(target)
             .parent()
             .map_or_else(|| "/".to_string(), |d| d.to_string_lossy().into_owned());
-        let tmp = Path::new(&dir).join(TMP_NAME).to_string_lossy().into_owned();
+        let tmp = Path::new(&dir).join(unique_tmp_name()).to_string_lossy().into_owned();
         Self {
             sudo: sudo.to_string(),
             target: target.to_string(),
@@ -173,6 +182,21 @@ impl Paths {
             tmp,
         }
     }
+}
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A temporary name no other run shares: fixed prefix, then pid, a time-derived
+/// part and a counter.
+fn unique_tmp_name() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    format!(
+        "{TMP_PREFIX}{}.{nanos:08x}{:04x}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 // ── argv construction — pure, so the whole command surface is unit-tested ────
@@ -423,17 +447,26 @@ pub fn read_verified_staged(path: &Path, uid: u32, expected_sha256: &str) -> Res
 
 // ── running sudo ────────────────────────────────────────────────────────────
 
-/// Ignore `SIGINT`/`SIGQUIT` in this process while `sudo` owns the terminal, so
-/// a ^C aimed at a password prompt cannot kill `aasm` between an operation and
-/// its cleanup. `sudo` itself still receives them. Nests: each guard restores
-/// what it found.
+/// Ignore the interrupting signals in this process while `sudo` owns the
+/// terminal and while an operation is cleaned up, so a ^C aimed at a password
+/// prompt cannot kill `aasm` between an operation and its cleanup. `sudo` itself
+/// still receives them. It wraps only sudo children and cleanup — never a y/N
+/// prompt, which ^C must be able to cancel. Nests: each guard restores what it
+/// found.
 struct SignalGuard {
-    previous: [(libc::c_int, libc::sighandler_t); 2],
+    previous: [(libc::c_int, libc::sighandler_t); 4],
 }
 
 impl SignalGuard {
     fn ignore() -> Self {
-        let mut previous = [(libc::SIGINT, libc::SIG_DFL), (libc::SIGQUIT, libc::SIG_DFL)];
+        // SIGTERM and SIGHUP as well: a closed terminal or a `kill` must not skip
+        // the `sudo -k` and the cleanup that follow an operation.
+        let mut previous = [
+            (libc::SIGINT, libc::SIG_DFL),
+            (libc::SIGQUIT, libc::SIG_DFL),
+            (libc::SIGTERM, libc::SIG_DFL),
+            (libc::SIGHUP, libc::SIG_DFL),
+        ];
         for entry in &mut previous {
             // SAFETY: `signal` with `SIG_IGN` installs no handler code; it only
             // changes the disposition, and the old one is restored in `Drop`.
@@ -478,6 +511,8 @@ fn run(argv: &[OsString], input: Option<&[u8]>) -> Result<Ran, String> {
         command.pre_exec(|| {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
             libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            libc::signal(libc::SIGHUP, libc::SIG_DFL);
             Ok(())
         });
     }
@@ -557,6 +592,18 @@ pub struct Elevator {
     record: Record,
     /// The sudo in use when this module last authenticated, so `sudo -k` is owed.
     authenticated_with: Option<String>,
+    /// How long one request may take, from the moment it arrives.
+    budget: Duration,
+    /// When the current request must stop mutating the host. `None` outside a
+    /// request (direct calls in tests).
+    deadline: Option<Instant>,
+    /// Whether the current request put a file in place, whatever the outcome it
+    /// ends up reporting: a placement followed by a failed cleanup is still a
+    /// changed host.
+    placed_this_op: bool,
+    /// Test hook run between verifying the staged bytes and placing them.
+    #[cfg(test)]
+    after_verify: Option<Box<dyn FnMut() + Send>>,
 }
 
 impl Elevator {
@@ -571,7 +618,33 @@ impl Elevator {
             assume_yes: false,
             record,
             authenticated_with: None,
+            budget: CLIENT_ELEVATION_BUDGET,
+            deadline: None,
+            placed_this_op: false,
+            #[cfg(test)]
+            after_verify: None,
         }
+    }
+
+    /// Start the clock for one request.
+    fn begin(&mut self) {
+        self.deadline = Some(Instant::now() + self.budget);
+        self.placed_this_op = false;
+    }
+
+    /// `Some(Cancelled)` once the request's budget is spent. Checked after every
+    /// wait on the operator and before every command that changes the host: the
+    /// runtime stops waiting after its own, longer, timeout, and anything done
+    /// past that point would change the host behind a record that says it did
+    /// not.
+    fn out_of_time(&self) -> Option<ElevationOutcome> {
+        self.deadline.filter(|d| Instant::now() >= *d).map(|_| {
+            ElevationOutcome::Cancelled(
+                "authorization took longer than this command waits for it, and the runtime has stopped waiting; \
+                 nothing further was changed"
+                    .to_string(),
+            )
+        })
     }
 
     /// `--yes` was given: the command's own confirmation already covers a
@@ -586,13 +659,11 @@ impl Elevator {
     /// the client is dropped) is the backstop for the sudo timestamp.
     pub fn into_handler(mut self) -> ElevationHandler {
         Box::new(move |request| {
-            // Around the whole handler, not just each child: ^C must not skip the
-            // `sudo -k` or the cleanup that follow an operation.
-            let _guard = SignalGuard::ignore();
+            self.begin();
             let outcome = self.perform(request);
             {
                 let mut state = self.record.lock().expect("elevation record");
-                if outcome == ElevationOutcome::Completed {
+                if outcome == ElevationOutcome::Completed || self.placed_this_op {
                     state.changed = true;
                 }
                 state.last = Some(outcome.clone());
@@ -671,29 +742,49 @@ impl Elevator {
         }
 
         match kind {
-            wire::ElevationKind::InstallFile => {
-                let body = match read_verified_staged(Path::new(&request.staged_path), self.uid, &request.staged_sha256)
-                {
-                    Ok(body) => body,
-                    Err(e) => return O::Cancelled(format!("refusing to install an unverified staged file: {e}")),
-                };
-                if let Some(refusal) = self.review(purpose, &sha256_hex(&body), &target) {
-                    return refusal;
-                }
-                self.place(&paths, &body)
-            }
+            wire::ElevationKind::InstallFile => self.install_verified(request, purpose, &paths),
             _ => {
                 if self.mode == Mode::Remove
                     && !self.assume_yes
-                    && !confirm_on_tty(&format!(
-                        "Delete the administrator-owned managed-settings file {target}?"
-                    ))
+                    && !confirm_on_tty(
+                        &format!("Delete the administrator-owned managed-settings file {}?", paths.target),
+                        self.deadline,
+                    )
                 {
-                    return O::Cancelled("deleting the managed-settings file was declined".to_string());
+                    return O::Cancelled("deleting the managed-settings file was declined or timed out".to_string());
+                }
+                if let Some(late) = self.out_of_time() {
+                    return late;
                 }
                 self.delete(&paths)
             }
         }
+    }
+
+    /// Verify the staged bytes, get the operator's say on them, and hand exactly
+    /// those bytes — held in memory, the path never consulted again — to root.
+    fn install_verified(
+        &mut self,
+        request: &wire::ElevationRequest,
+        purpose: wire::ElevationPurpose,
+        paths: &Paths,
+    ) -> ElevationOutcome {
+        use ElevationOutcome as O;
+        let body = match read_verified_staged(Path::new(&request.staged_path), self.uid, &request.staged_sha256) {
+            Ok(body) => body,
+            Err(e) => return O::Cancelled(format!("refusing to install an unverified staged file: {e}")),
+        };
+        if let Some(refusal) = self.review(purpose, &sha256_hex(&body), &paths.target) {
+            return refusal;
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.after_verify.as_mut() {
+            hook();
+        }
+        if let Some(late) = self.out_of_time() {
+            return late;
+        }
+        self.place(paths, &body)
     }
 
     /// The operator's say on the document about to be placed, by purpose.
@@ -708,10 +799,16 @@ impl Elevator {
                 ))),
                 // A repair re-places a document the operator did not just
                 // review: show its digest and ask.
+                // `--yes` already covers it: the digest is the one the runtime
+                // stated, and a repair re-places Agent Assembly's own document.
+                None if self.mode == Mode::Repair && self.assume_yes => None,
                 None if self.mode == Mode::Repair => {
-                    if confirm_on_tty(&format!(
-                        "Agent Assembly needs to re-place the managed-settings document (sha256:{digest}) at {target}. Continue?"
-                    )) {
+                    if confirm_on_tty(
+                        &format!(
+                            "Agent Assembly needs to re-place the managed-settings document (sha256:{digest}) at {target}. Continue?"
+                        ),
+                        self.deadline,
+                    ) {
                         None
                     } else {
                         Some(O::Cancelled("re-placing the managed settings was declined".to_string()))
@@ -725,9 +822,12 @@ impl Elevator {
             // wire, so it cannot be compared with a recorded one; the strongest
             // check available without new IPC is to show this digest and ask.
             wire::ElevationPurpose::RestoreBackup => {
-                if confirm_on_tty(&format!(
-                    "Agent Assembly needs to restore the previous managed-settings file (sha256:{digest}) over {target}. Continue?"
-                )) {
+                if confirm_on_tty(
+                    &format!(
+                        "Agent Assembly needs to restore the previous managed-settings file (sha256:{digest}) over {target}. Continue?"
+                    ),
+                    self.deadline,
+                ) {
                     None
                 } else {
                     Some(O::Cancelled("restoring the previous file was declined".to_string()))
@@ -769,8 +869,10 @@ impl Elevator {
     ///
     /// Root sees only fixed paths inside the managed directory: the bytes go to a
     /// root-owned temporary through `tee`'s stdin, `install` moves that into
-    /// place, and the temporary is removed on every path.
+    /// place, and the temporary is removed on every path. Signals are ignored for
+    /// the whole sequence, including the `sudo -k` at its end.
     pub fn place(&mut self, paths: &Paths, body: &str) -> ElevationOutcome {
+        let _guard = SignalGuard::ignore();
         let outcome = self.place_inner(paths, body);
         self.drop_ticket();
         outcome
@@ -781,42 +883,84 @@ impl Elevator {
         if let Some(denied) = self.authenticate(paths, "place") {
             return denied;
         }
-        let mut created_dir = false;
-        if !Path::new(&paths.dir).exists() {
-            match run(&mkdir_argv(&paths.sudo, &paths.dir), None) {
-                Ok(ran) if ran.success => created_dir = true,
-                Ok(ran) => return self.noninteractive_or(ran, "creating the managed directory"),
-                Err(e) => return O::Unavailable(e),
+        // A password prompt can sit open; if the budget ran out while it did,
+        // nothing is changed.
+        if let Some(late) = self.out_of_time() {
+            return late;
+        }
+        // Whether the directory is ours to remove again is decided before the
+        // idempotent `install -d` makes it exist.
+        let existed = Path::new(&paths.dir).exists();
+        if existed {
+            if let Err(why) = check_managed_dir(Path::new(&paths.dir), paths.sudo == SUDO) {
+                return O::Unavailable(why);
             }
         }
-        let written = run(&tee_argv(&paths.sudo, &paths.tmp), Some(body.as_bytes()));
-        let outcome = match written {
-            Ok(ran) if ran.success => match run(&install_argv(&paths.sudo, &paths.tmp, &paths.target), None) {
-                Ok(ran) if ran.success => O::Completed,
-                Ok(ran) => self.noninteractive_or(ran, "placing the file"),
-                Err(e) => O::Unavailable(e),
-            },
-            Ok(ran) => self.noninteractive_or(ran, "writing the temporary file"),
-            Err(e) => O::Unavailable(e),
-        };
-        // The temporary goes on every path, success included.
-        let _ = run(&remove_argv(&paths.sudo, &paths.tmp), None);
+        match run(&mkdir_argv(&paths.sudo, &paths.dir), None) {
+            Ok(ran) if ran.success => {}
+            Ok(ran) => return self.noninteractive_or(ran, "preparing the managed directory"),
+            Err(e) => return O::Unavailable(e),
+        }
+        let created_dir = !existed;
+        let outcome = self.write_and_install(paths, body);
+        // The temporary goes on every path, success included; a leftover is
+        // reported, never papered over.
+        let leftover = !matches!(run(&remove_argv(&paths.sudo, &paths.tmp), None), Ok(ran) if ran.success)
+            || Path::new(&paths.tmp).exists();
         if outcome != O::Completed && created_dir {
             // Only a directory this run created, and `rmdir` refuses a non-empty one.
             let _ = run(&rmdir_argv(&paths.sudo, &paths.dir), None);
         }
+        if leftover {
+            return O::Cancelled(format!(
+                "the temporary file {} could not be removed and may still be there; remove it with `sudo rm -f`{}",
+                paths.tmp,
+                if self.placed_this_op {
+                    "; the managed-settings file itself WAS placed"
+                } else {
+                    ""
+                }
+            ));
+        }
         outcome
+    }
+
+    fn write_and_install(&mut self, paths: &Paths, body: &str) -> ElevationOutcome {
+        use ElevationOutcome as O;
+        if let Some(late) = self.out_of_time() {
+            return late;
+        }
+        match run(&tee_argv(&paths.sudo, &paths.tmp), Some(body.as_bytes())) {
+            Ok(ran) if ran.success => {}
+            Ok(ran) => return self.noninteractive_or(ran, "writing the temporary file"),
+            Err(e) => return O::Unavailable(e),
+        }
+        if let Some(late) = self.out_of_time() {
+            return late;
+        }
+        match run(&install_argv(&paths.sudo, &paths.tmp, &paths.target), None) {
+            Ok(ran) if ran.success => {
+                self.placed_this_op = true;
+                O::Completed
+            }
+            Ok(ran) => self.noninteractive_or(ran, "placing the file"),
+            Err(e) => O::Unavailable(e),
+        }
     }
 
     /// Delete the target.
     pub fn delete(&mut self, paths: &Paths) -> ElevationOutcome {
         use ElevationOutcome as O;
+        let _guard = SignalGuard::ignore();
         let outcome = match self.authenticate(paths, "delete") {
             Some(denied) => denied,
-            None => match run(&remove_argv(&paths.sudo, &paths.target), None) {
-                Ok(ran) if ran.success => O::Completed,
-                Ok(ran) => self.noninteractive_or(ran, "removing the file"),
-                Err(e) => O::Unavailable(e),
+            None => match self.out_of_time() {
+                Some(late) => late,
+                None => match run(&remove_argv(&paths.sudo, &paths.target), None) {
+                    Ok(ran) if ran.success => O::Completed,
+                    Ok(ran) => self.noninteractive_or(ran, "removing the file"),
+                    Err(e) => O::Unavailable(e),
+                },
             },
         };
         self.drop_ticket();
@@ -854,9 +998,62 @@ impl Drop for Elevator {
     }
 }
 
-/// Ask a yes/no question on the controlling terminal.
-fn confirm_on_tty(question: &str) -> bool {
-    use std::io::{BufRead, BufReader};
+/// Read one line from `fd`, giving up at `deadline` (or never, with `None`).
+///
+/// `poll(2)` rather than a blocking read, so an operator who walks away from a
+/// y/N cannot leave the command holding a question the runtime has long since
+/// stopped waiting on. `None` is a timeout, EOF or error: all read as "no".
+pub fn read_answer_with_deadline(fd: libc::c_int, deadline: Option<Instant>) -> Option<String> {
+    let mut line = Vec::new();
+    loop {
+        let timeout_ms: libc::c_int = match deadline {
+            None => -1,
+            Some(d) => {
+                let left = d.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return None;
+                }
+                // Round up so a sub-millisecond remainder cannot spin.
+                libc::c_int::try_from(left.as_millis().saturating_add(1)).unwrap_or(libc::c_int::MAX)
+            }
+        };
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `pfd` is a valid, initialised `pollfd` and the count is 1.
+        let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        if ready < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return None;
+        }
+        if ready == 0 {
+            return None;
+        }
+        let mut buf = [0u8; 256];
+        // SAFETY: `buf` is valid for `buf.len()` writable bytes.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if n <= 0 {
+            return None;
+        }
+        line.extend_from_slice(&buf[..n as usize]);
+        if let Some(end) = line.iter().position(|b| *b == b'\n') {
+            line.truncate(end);
+            return Some(String::from_utf8_lossy(&line).into_owned());
+        }
+        if line.len() > 4096 {
+            return None;
+        }
+    }
+}
+
+/// Ask a yes/no question on the controlling terminal, with a deadline. ^C is not
+/// ignored here, so it cancels the question.
+fn confirm_on_tty(question: &str, deadline: Option<Instant>) -> bool {
+    use std::os::fd::AsRawFd;
     let Ok(tty) = OpenOptions::new().read(true).write(true).open("/dev/tty") else {
         return false;
     };
@@ -865,11 +1062,39 @@ fn confirm_on_tty(question: &str) -> bool {
     };
     let _ = write!(out, "{question} [y/N] ");
     let _ = out.flush();
-    let mut answer = String::new();
-    if BufReader::new(tty).read_line(&mut answer).is_err() {
-        return false;
+    let answer = read_answer_with_deadline(tty.as_raw_fd(), deadline);
+    matches!(
+        answer.as_deref().map(|a| a.trim().to_ascii_lowercase()).as_deref(),
+        Some("y" | "yes")
+    )
+}
+
+/// Check that an existing managed directory is one root owns and nobody else can
+/// write, from a `stat` the CLI can do without privilege. Skipped under the test
+/// seam, whose directories belong to the test user.
+///
+/// # Errors
+///
+/// Why the directory is not trustworthy, as a sentence.
+pub fn check_managed_dir(dir: &Path, enforce_root_owner: bool) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("{} cannot be inspected: {e}", dir.display()))?;
+    if !meta.is_dir() {
+        return Err(format!("{} exists and is not a directory", dir.display()));
     }
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    if meta.mode() & 0o022 != 0 {
+        return Err(format!(
+            "{} is writable by someone other than its owner (mode {:04o}); refusing to place a root-owned file in it",
+            dir.display(),
+            meta.mode() & 0o7777
+        ));
+    }
+    if enforce_root_owner && meta.uid() != 0 {
+        return Err(format!(
+            "{} is not owned by root; refusing to place a root-owned file in a directory another account controls",
+            dir.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Pick the failure to report from what `sudo` said, falling back to the
@@ -883,22 +1108,25 @@ fn confirm_on_tty(question: &str) -> bool {
 pub fn failure_after(base: Failure, record: &Record) -> Failure {
     use ElevationOutcome as O;
     let state = record.lock().expect("elevation record").clone();
-    let Some(last) = state.last else { return base };
-    let detail = match &last {
-        O::Completed => return base,
-        O::Denied(d) | O::Cancelled(d) | O::Unavailable(d) | O::NonInteractive(d) => d.clone(),
-    };
+    // Anything that completed makes "nothing was changed" false, whatever went
+    // wrong afterwards — a refused rollback, or the connection failing after the
+    // last operation had already run.
     if state.changed {
+        let detail = match &state.last {
+            Some(O::Denied(d) | O::Cancelled(d) | O::Unavailable(d) | O::NonInteractive(d)) => d.clone(),
+            _ => base.detail.clone(),
+        };
         return Failure::new(
             Outcome::InternalError,
             format!(
-                "the managed-settings file WAS changed earlier in this run, and a later administrator operation \
-                 did not complete ({detail}); the host is not in the state it started in"
+                "the managed-settings file WAS changed earlier in this run, and the command then failed \
+                 ({detail}); the host is not in the state it started in"
             ),
             "run `aasm integrations status claude-code`, then `aasm integrations repair claude-code` or \
              `aasm integrations remove claude-code` to reconcile it",
         );
     }
+    let Some(last) = state.last else { return base };
     match last {
         O::Denied(detail) | O::Cancelled(detail) => Failure::new(
             Outcome::Aborted,
@@ -960,7 +1188,18 @@ mod tests {
     fn no_argv_run_as_root_names_a_staged_path_and_every_path_is_inside_the_managed_directory() {
         let paths = Paths::new(SUDO, MANAGED_SETTINGS_PATH);
         assert_eq!(paths.dir, "/Library/Application Support/ClaudeCode");
-        assert_eq!(paths.tmp, TMP);
+        assert!(
+            paths
+                .tmp
+                .starts_with("/Library/Application Support/ClaudeCode/.managed-settings.json.aasm-new."),
+            "{}",
+            paths.tmp
+        );
+        assert_ne!(
+            paths.tmp,
+            Paths::new(SUDO, MANAGED_SETTINGS_PATH).tmp,
+            "two runs must never share a temporary name"
+        );
         let all = [
             auth_argv(SUDO, &paths.target, "place"),
             mkdir_argv(SUDO, &paths.dir),
@@ -1364,23 +1603,50 @@ esac
         path
     }
 
+    fn leftover_tmps(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.starts_with(TMP_PREFIX))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The call-site property: `install_verified` reads the staged file, and what
+    /// reaches root is what it read — even when the file is replaced between the
+    /// verification and the placement (the hook runs exactly there).
     #[test]
-    fn root_receives_the_verified_bytes_even_if_the_staged_file_is_swapped_afterwards() {
+    fn root_receives_the_bytes_read_at_verification_even_if_the_staged_file_is_swapped_before_placement() {
         let s = staged("{\"reviewed\":true}");
         let scratch = tempfile::tempdir().expect("tempdir");
         let record = scratch.path().join("record");
         let stub = write_stub(scratch.path(), &record);
         let target = scratch.path().join("ClaudeCode").join("managed-settings.json");
-
-        // Verified, held in memory ...
-        let verified = read_verified_staged(&s.file, s.uid, &s.sha).expect("verifies");
-        // ... then swapped on disk before anything reaches root.
-        std::fs::write(&s.file, "{\"EVIL\":true}").expect("swap");
-
         let paths = Paths::new(stub.to_str().unwrap(), target.to_str().unwrap());
-        let mut elevator = Elevator::new(Mode::Install, Some(s.sha.clone()), new_record());
-        assert_eq!(elevator.place(&paths, &verified), O::Completed);
 
+        let swapped = s.file.clone();
+        let mut elevator = Elevator::new(Mode::Install, Some(s.sha.clone()), new_record());
+        elevator.after_verify = Some(Box::new(move || {
+            std::fs::write(&swapped, "{\"EVIL\":true}").expect("swap");
+        }));
+        let mut request = request_for(
+            target.to_str().unwrap(),
+            wire::ElevationKind::InstallFile,
+            wire::ElevationPurpose::PlaceReviewed,
+        );
+        request.staged_path = s.file.display().to_string();
+        request.staged_sha256 = s.sha.clone();
+
+        let outcome = elevator.install_verified(&request, wire::ElevationPurpose::PlaceReviewed, &paths);
+
+        assert_eq!(outcome, O::Completed);
+        assert_eq!(
+            std::fs::read_to_string(&s.file).unwrap(),
+            "{\"EVIL\":true}",
+            "the swap really happened"
+        );
         assert_eq!(std::fs::read_to_string(&target).expect("placed"), "{\"reviewed\":true}");
         let seen = std::fs::read_to_string(&record).expect("record");
         assert!(
@@ -1388,16 +1654,167 @@ esac
             "the staged path reached the root side: {seen}"
         );
         assert!(!seen.contains("EVIL"), "{seen}");
-        assert!(
-            !scratch.path().join("ClaudeCode").join(TMP_NAME).exists(),
-            "the temporary must be removed"
-        );
+        assert!(leftover_tmps(&scratch.path().join("ClaudeCode")).is_empty());
         // authenticate, mkdir, tee, install, rm tmp, sudo -k
         assert_eq!(seen.matches("CALL_END").count(), 6, "{seen}");
         assert!(
             seen.trim_end().ends_with("ARG:-k\nCALL_END"),
             "the ticket is dropped last: {seen}"
         );
+    }
+
+    #[test]
+    fn a_placement_after_the_budget_is_spent_changes_nothing_and_still_drops_the_ticket() {
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let record = scratch.path().join("record");
+        let stub = write_stub(scratch.path(), &record);
+        let target = scratch.path().join("ClaudeCode").join("managed-settings.json");
+        let paths = Paths::new(stub.to_str().unwrap(), target.to_str().unwrap());
+        let mut elevator = Elevator::new(Mode::Install, None, new_record());
+        elevator.budget = Duration::ZERO;
+        elevator.begin();
+
+        let outcome = elevator.place(&paths, "body");
+
+        match outcome {
+            O::Cancelled(why) => assert!(why.contains("stopped waiting"), "{why}"),
+            other => panic!("expected cancelled, got {other:?}"),
+        }
+        assert!(!target.exists());
+        let seen = std::fs::read_to_string(&record).expect("record");
+        assert!(
+            !seen.contains("/usr/bin/tee") && !seen.contains("ARG:-m"),
+            "nothing may be written: {seen}"
+        );
+        assert!(seen.trim_end().ends_with("ARG:-k\nCALL_END"), "{seen}");
+        assert!(!elevator.placed_this_op);
+    }
+
+    #[test]
+    fn a_delete_after_the_budget_is_spent_is_not_performed() {
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let record = scratch.path().join("record");
+        let stub = write_stub(scratch.path(), &record);
+        let target = scratch.path().join("managed-settings.json");
+        std::fs::write(&target, "x").expect("target");
+        let paths = Paths::new(stub.to_str().unwrap(), target.to_str().unwrap());
+        let mut elevator = Elevator::new(Mode::Remove, None, new_record());
+        elevator.budget = Duration::ZERO;
+        elevator.begin();
+
+        assert!(matches!(elevator.delete(&paths), O::Cancelled(_)));
+        assert!(target.exists(), "a delete past the budget must not run");
+    }
+
+    #[test]
+    fn the_client_budget_is_the_runtimes_shared_constant_and_ends_before_its_timeout() {
+        assert_eq!(
+            Elevator::new(Mode::Install, None, new_record()).budget,
+            CLIENT_ELEVATION_BUDGET
+        );
+        assert!(
+            CLIENT_ELEVATION_BUDGET < aa_runtime::devint::elevation::DEFAULT_ELEVATION_TIMEOUT,
+            "the client must stop before the runtime does"
+        );
+    }
+
+    #[test]
+    fn a_question_nobody_answers_times_out_and_an_answer_is_read() {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `pipe` fills two valid descriptors on success.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+
+        let started = Instant::now();
+        let unanswered = read_answer_with_deadline(read_fd, Some(Instant::now() + Duration::from_millis(150)));
+        assert_eq!(unanswered, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline must bound the wait"
+        );
+
+        // SAFETY: `write_fd` is the pipe's open write end and the buffer is valid.
+        assert_eq!(unsafe { libc::write(write_fd, b"y\n".as_ptr().cast(), 2) }, 2);
+        assert_eq!(
+            read_answer_with_deadline(read_fd, Some(Instant::now() + Duration::from_secs(5))).as_deref(),
+            Some("y")
+        );
+        // An already-expired deadline answers "no" without reading.
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::write(write_fd, b"y\n".as_ptr().cast(), 2) }, 2);
+        assert_eq!(read_answer_with_deadline(read_fd, Some(Instant::now())), None);
+        // SAFETY: closing descriptors this test opened.
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+    }
+
+    #[test]
+    fn a_connection_failure_after_a_completed_operation_still_says_the_file_was_changed() {
+        let record = new_record();
+        *record.lock().unwrap() = State {
+            last: Some(O::Completed),
+            changed: true,
+        };
+        let transport = Failure::new(Outcome::InternalError, "DI-API transport error: broken pipe", "re-run");
+        let failure = failure_after(transport, &record);
+        assert!(failure.detail.contains("WAS changed"), "{failure}");
+        assert!(failure.detail.contains("broken pipe"), "{failure}");
+        assert!(!failure.detail.contains("nothing was changed"), "{failure}");
+        assert!(failure.remediation.contains("aasm integrations repair"), "{failure}");
+    }
+
+    #[test]
+    fn a_drift_label_with_a_key_suffix_still_names_the_managed_file() {
+        assert!(
+            std::env::var_os(MANAGED_ROOT_ENV).is_none(),
+            "the redirect must not be set in this test's environment"
+        );
+        let keyed = format!("{MANAGED_SETTINGS_PATH}#permissionMode");
+        assert!(involves_managed_file([keyed.as_str()]));
+        assert!(!involves_managed_file(["tool version", "/etc/hosts#x"]));
+        // A drifted-but-present managed file against a runtime below v8: refused, exit 4.
+        let refused = refuse_terminal_below_v8(AdminAuthArg::Terminal, involves_managed_file([keyed.as_str()]), 7)
+            .expect_err("a keyed drift label must still count as the managed file");
+        assert_eq!(refused.outcome, Outcome::Incompatible);
+    }
+
+    #[test]
+    fn a_managed_directory_another_account_can_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let dir = scratch.path().join("ClaudeCode");
+        std::fs::create_dir(&dir).expect("dir");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o775)).expect("chmod");
+        let why = check_managed_dir(&dir, false).expect_err("group-writable");
+        assert!(why.contains("writable"), "{why}");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert!(check_managed_dir(&dir, false).is_ok());
+        // Not owned by root: refused when ownership is enforced (the real path),
+        // unless this test happens to run as root.
+        // SAFETY: `getuid` cannot fail.
+        if unsafe { libc::getuid() } != 0 {
+            assert!(check_managed_dir(&dir, true)
+                .expect_err("not root-owned")
+                .contains("not owned by root"));
+        }
+        assert!(check_managed_dir(&dir.join("missing"), false).is_err());
+    }
+
+    #[test]
+    fn repair_with_yes_does_not_ask_but_a_restore_always_does() {
+        let assume = Elevator::new(Mode::Repair, None, new_record()).assuming_yes(true);
+        assert_eq!(
+            assume.review(wire::ElevationPurpose::PlaceReviewed, &"a".repeat(64), "/t"),
+            None,
+            "--yes covers re-placing Agent Assembly's own document"
+        );
+        let strict = Elevator::new(Mode::Install, None, new_record());
+        assert!(matches!(
+            strict.review(wire::ElevationPurpose::PlaceReviewed, &"a".repeat(64), "/t"),
+            Some(O::Cancelled(_))
+        ));
     }
 
     #[test]
@@ -1442,7 +1859,7 @@ esac
 
         assert!(matches!(outcome, O::Cancelled(_)), "{outcome:?}");
         assert!(managed_dir.exists());
-        assert!(!managed_dir.join(TMP_NAME).exists());
+        assert!(leftover_tmps(&managed_dir).is_empty());
         let seen = std::fs::read_to_string(&record).expect("record");
         assert!(!seen.contains("rmdir"), "{seen}");
     }

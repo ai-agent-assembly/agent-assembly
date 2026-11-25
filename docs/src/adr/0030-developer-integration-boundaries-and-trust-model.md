@@ -926,7 +926,7 @@ fixed set of commands on fixed paths, started by `sudo` in the terminal that ran
 **root never reads a path the user can write**: the client verifies the staged file (`O_NOFOLLOW`,
 owner, link count, mode, size, private parent, digest — and, for the reviewed placement, the digest
 the operator reviewed), holds the bytes in memory, and feeds them on stdin to `sudo tee` into a
-temporary inside the root-owned managed directory; `install` then moves that temporary to
+temporary inside the root-owned managed directory (its name is unique per run, with the fixed prefix `.managed-settings.json.aasm-new.`; the directory is created idempotently with `install -d`, and an existing one is refused unless root owns it and it is not writable by others); `install` then moves that temporary to
 `/Library/Application Support/ClaudeCode/managed-settings.json` and `rm -f` removes it, also on
 every failure path (a directory the run created is removed only if still empty). macOS `install(1)`
 rejects a non-regular source such as `/dev/stdin` (exit 71, "Inappropriate file type"), which is why
@@ -934,7 +934,11 @@ the bytes go through `tee` rather than straight to `install`. No root argv conta
 path. Each verb may perform only its own operations: an install places the reviewed document and
 may restore or delete only to roll back a placement that completed in the same run; a removal may
 delete (y/N unless `--yes`) or restore a backup (always asking, showing the digest — the digest of
-the file an install displaced is not on the wire, so it is shown rather than compared). `sudo -k`
+the file an install displaced is not on the wire, so it is shown rather than compared). A client also gives up on its own after 8 minutes
+(`CLIENT_ELEVATION_BUDGET`), two minutes inside the runtime's ten-minute timeout: it checks the
+budget after every wait on the operator and before every command that changes the host, and the
+y/N prompts have a `poll(2)` deadline, so nothing is changed after the runtime has cancelled and
+rolled back. A leftover temporary is reported rather than hidden. `sudo -k`
 runs after every elevated operation, so each one prompts for the password afresh; this also drops a
 sudo ticket the operator held before the run, which is accepted. If a placement completed and a later
 rollback is refused, the command says the file **was** changed and points at `aasm integrations

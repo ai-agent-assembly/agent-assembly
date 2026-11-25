@@ -1541,7 +1541,12 @@ fn terminal_authorization_installs_through_one_sudo_call_and_never_the_dialog() 
     let calls = h.stub_calls();
     let target_str = target.display().to_string();
     let dir_str = target.parent().expect("parent").display().to_string();
-    let tmp_str = format!("{dir_str}/.managed-settings.json.aasm-new");
+    // The temporary is unique per run, with a fixed prefix, inside the managed directory.
+    let tmp_str = calls[2][4].clone();
+    assert!(
+        tmp_str.starts_with(&format!("{dir_str}/.managed-settings.json.aasm-new.")),
+        "{calls:?}"
+    );
     assert_eq!(
         calls.len(),
         6,
