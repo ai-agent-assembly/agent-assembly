@@ -54,8 +54,11 @@ CONSENT:
 
         terminal   (default) sudo in the terminal that ran this command. You
                    type your password to sudo directly; aasm and the runtime
-                   never see it and never run as root — only one
-                   /usr/bin/install of one file does. Works over SSH and tmux
+                   never see it and never run as root — only a fixed
+                   set of commands (install -d, tee, install, rm -f, rmdir) on
+                   the one managed-settings file and its directory does, and
+                   each such operation asks for the password afresh. Works over
+                   SSH and tmux
                    with no desktop session. With no controlling terminal the
                    command exits promptly (9) and changes nothing.
         gui        the macOS authorization dialog. Used only when you pass

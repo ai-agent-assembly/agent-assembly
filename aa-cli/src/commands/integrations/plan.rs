@@ -74,8 +74,10 @@ pub struct PlanArgs {
     /// How administrator authorization is obtained for that one file write.
     ///
     /// `terminal` (the default) runs `sudo` in the terminal that ran this
-    /// command, so it works over SSH and tmux with no desktop session: one
-    /// `/usr/bin/install` runs as root, and `aasm` and the runtime never do.
+    /// command, so it works over SSH and tmux with no desktop session: only a fixed
+    /// set of commands (`install -d`, `tee`, `install`, `rm -f`, `rmdir`) runs as
+    /// root, all on the one managed-settings file and its directory, and `aasm`
+    /// and the runtime never do.
     /// `gui` uses the macOS authorization dialog and is used only when you ask
     /// for it. `--yes` never changes this.
     #[arg(long, value_enum, default_value_t = AdminAuthArg::Terminal)]

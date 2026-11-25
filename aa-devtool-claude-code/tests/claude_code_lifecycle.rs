@@ -1096,7 +1096,7 @@ async fn a_terminal_plan_states_the_sudo_mechanism_and_never_the_gui_dialog() {
     let warnings = plan.warnings.join("\n");
     assert!(
         warnings.contains(
-            "sudo in the terminal that ran this command: one /usr/bin/install as root; aasm and the runtime are not elevated"
+            "sudo in the terminal that ran this command: a fixed set of root commands (install -d, tee, install, rm -f, rmdir) on one managed-settings file and its directory only; aasm and the runtime are not elevated"
         ),
         "{warnings}"
     );

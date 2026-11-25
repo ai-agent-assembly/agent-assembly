@@ -22,7 +22,7 @@ use crate::managed_settings::{Authorization, ManagedSettingsError, PrivilegedFil
 
 /// What the disclosure says about how authorization is obtained, verbatim.
 pub const TERMINAL_MECHANISM: &str =
-    "sudo in the terminal that ran this command: one /usr/bin/install as root; aasm and the runtime are not elevated";
+    "sudo in the terminal that ran this command: a fixed set of root commands (install -d, tee, install, rm -f, rmdir) on one managed-settings file and its directory only; aasm and the runtime are not elevated";
 
 /// Where an operation goes.
 #[derive(Clone)]
@@ -393,7 +393,7 @@ mod tests {
         let authority = BrokeredAuthority::disclosure_only("/x");
         assert_eq!(
             authority.mechanism(),
-            "sudo in the terminal that ran this command: one /usr/bin/install as root; aasm and the runtime are not elevated"
+            "sudo in the terminal that ran this command: a fixed set of root commands (install -d, tee, install, rm -f, rmdir) on one managed-settings file and its directory only; aasm and the runtime are not elevated"
         );
     }
 }

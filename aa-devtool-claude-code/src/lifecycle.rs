@@ -334,13 +334,15 @@ impl ClaudeCodeIntegration {
                 )
                 .privileged(match method {
                     AuthorizationMethod::Terminal => format!(
-                        "You will be asked for your password by sudo in this terminal, once, to place one \
-                         root-owned file at {}. Nothing else runs with elevated privileges; aasm and the \
-                         runtime are not elevated. Removing the integration reverses it.",
+                        "You will be asked for your password by sudo in this terminal each time a root command is \
+                         needed, to place the root-owned managed-settings file at {}. Only a fixed set of commands \
+                         (install -d, tee, install, rm -f, rmdir) runs as root, on that file and its directory; \
+                         nothing else runs with elevated privileges, and aasm and the runtime are not elevated. \
+                         Removing the integration reverses it and asks again.",
                         path.display()
                     ),
                     AuthorizationMethod::Gui | AuthorizationMethod::Unstated => format!(
-                        "Agent Assembly will ask for administrator authorization once, to place one file at {}. \
+                        "Agent Assembly will ask for administrator authorization to place one file at {}. \
                          Nothing else runs with elevated privileges. Removing the integration reverses it.",
                         path.display()
                     ),
