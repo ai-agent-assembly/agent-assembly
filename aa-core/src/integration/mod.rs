@@ -42,6 +42,7 @@ pub mod caller_env;
 pub mod capability;
 pub mod contract;
 pub mod drift;
+pub mod elevation;
 // The engine writes receipts, so like the store it exists only where the
 // lifecycle types can be serialized.
 #[cfg(feature = "serde")]
@@ -69,6 +70,9 @@ pub use contract::{
     McpGovernedTool,
 };
 pub use drift::{ArtifactObservation, DriftFinding, DriftInputs, DriftKind, DriftReport, ObservedStep};
+pub use elevation::{
+    AuthorizationMethod, ElevatedKind, ElevatedOperation, ElevationBroker, ElevationOutcome, ElevationPurpose,
+};
 #[cfg(feature = "serde")]
 pub use engine::{
     ApplyContext, ApplyOutcome, EngineError, ExecutionError, FilesystemExecutor, IntegrationEngine, OwnershipConflict,
