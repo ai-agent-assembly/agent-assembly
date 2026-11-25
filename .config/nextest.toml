@@ -15,6 +15,14 @@
 [profile.default]
 retries = 2
 
+# AAASM-6491: tests that give a child a real controlling terminal. A child
+# whose pty is not being read cannot finish exiting on macOS, and one such test
+# once held a heavy-run lane for six hours; a bound makes that a failure within
+# a minute instead.
+[[profile.default.overrides]]
+filter = 'package(aa-cli) & (test(/dev_tty/) | test(/tty_probe/) | test(/controlling_terminal/) | test(/delete_question/))'
+slow-timeout = { period = "30s", terminate-after = 2 }
+
 # AAASM-5465: the profile the Claude Code conformance lanes run under.
 # AAASM-5977 additionally moved `integration-tests.yml`'s own `Run integration
 # tests` step onto this profile, for the same reason: AC5 needs the executed
